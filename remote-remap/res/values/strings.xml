@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Remote Remap</string>
+    <string name="a11y_description">Opens apps from remote buttons, using the mapping set up over ADB. Acts only on mapped buttons; all other keys pass through.</string>
+</resources>

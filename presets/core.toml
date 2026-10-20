@@ -1,0 +1,28 @@
+# Packages that are never disabled or uninstalled, on any TV.
+# Classification: an exact entry in any preset beats a glob; among equal matches core > bloat > optional.
+# So "com.android.*" here can still be overridden by an exact bloat entry such as com.android.printspooler.
+
+[preset]
+name = "core"
+description = "Android / Google core. Always loaded."
+always = true
+
+[core]
+"android" = "Android framework"
+"android.*" = "Framework overlays and generated resources"
+"com.android.*" = "AOSP system components (settings, providers, system UI, networking, Bluetooth...)"
+"com.google.android.gms" = "Google Play services"
+"com.google.android.gsf" = "Google services framework"
+"com.android.vending" = "Play Store (needed to install apps)"
+"com.google.android.webview" = "WebView"
+"com.google.android.overlay.*" = "Google config overlays"
+"com.google.android.ext.*" = "Mainline modules"
+"com.google.android.modulemetadata" = "Mainline modules"
+"com.google.android.permissioncontroller" = "Permissions"
+"com.google.android.packageinstaller" = "Installs APKs"
+"com.google.android.inputmethod.latin" = "On-screen keyboard"
+"com.google.android.tts" = "Text-to-speech (voice replies)"
+"com.google.android.tv.remote.service" = "Phone remote pairing"
+"com.google.android.onetimeinitializer" = "First-boot init"
+"com.google.android.partnersetup" = "Partner config"
+"com.google.android.syncadapters.*" = "Account sync"

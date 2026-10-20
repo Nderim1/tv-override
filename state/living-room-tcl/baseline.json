@@ -1,0 +1,661 @@
+{
+ "taken": "2026-10-20T09:25:00+02:00",
+ "reconstructed": true,
+ "note": "Rebuilt after the fact: first-session package list, all enabled, plus the apps uninstalled that day.",
+ "props": {
+  "ro.product.manufacturer": "TCL",
+  "ro.product.model": "Smart TV Pro",
+  "ro.product.device": "G10",
+  "ro.product.name": "G10_4K_GB",
+  "ro.build.version.release": "12",
+  "ro.build.version.sdk": "31",
+  "ro.serialno": "380260560EC0ED05C",
+  "ro.product.cpu.abi": "armeabi-v7a"
+ },
+ "packages": {
+  "android": {
+   "enabled": true,
+   "user": false
+  },
+  "android.auto_generated_rro_product__": {
+   "enabled": true,
+   "user": false
+  },
+  "android.autoinstalls.config.google.gtvpai": {
+   "enabled": true,
+   "user": false
+  },
+  "ch.protonvpn.android": {
+   "enabled": true,
+   "user": true
+  },
+  "com.abide.magellantv": {
+   "enabled": true,
+   "user": true
+  },
+  "com.amazon.amazonvideo.livingroom": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.backupconfirm": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.bluetooth": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.captiveportallogin": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.certinstaller": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.companiondevicemanager": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.connectivity.resources": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.cts.ctsshim": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.cts.priv.ctsshim": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.dreams.basic": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.dynsystem": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.externalstorage": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.hotspot2.osulogin": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.htmlviewer": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.inputdevices": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.keychain": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.localtransport": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.location.fused": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.managedprovisioning": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.networkstack.inprocess": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.networkstack.permissionconfig": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.networkstack.tethering.inprocess": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.pacprocessor": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.printspooler": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.providers.calendar": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.providers.contacts": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.providers.downloads": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.providers.media": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.providers.media.module": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.providers.settings": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.providers.tv": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.providers.userdictionary": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.proxyhandler": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.se": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.settings.intelligence": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.sharedstoragebackup": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.shell": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.soundpicker": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.statementservice": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.systemui": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tethering.overlay": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tethering.overlay.gsi": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tv.frameworkpackagestubs": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tv.overlay.lowram": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tv.overlay.networkstack.inprocess": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tv.overlay.settingsprovider": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tv.overlay.wifi.resources": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tv.settings": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tv.settings.gms.resoverlay": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tv.settings.google.resoverlay": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.tv.settings.vendor.resoverlay": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.vending": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.vpndialogs": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.wallpaper.livepicker": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.wallpaperbackup": {
+   "enabled": true,
+   "user": false
+  },
+  "com.android.wifi.resources": {
+   "enabled": true,
+   "user": false
+  },
+  "com.apple.atve.androidtv.appletv": {
+   "enabled": true,
+   "user": true
+  },
+  "com.cbs.ca": {
+   "enabled": true,
+   "user": true
+  },
+  "com.crunchyroll.crunchyroid": {
+   "enabled": true,
+   "user": true
+  },
+  "com.disney.disneyplus": {
+   "enabled": true,
+   "user": true
+  },
+  "com.edgewaysoft.chessTV": {
+   "enabled": true,
+   "user": true
+  },
+  "com.esaba.downloader": {
+   "enabled": true,
+   "user": true
+  },
+  "com.google.android.apps.mediashell": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.apps.tv.dreamx": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.apps.tv.launcherx": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.backdrop": {
+   "enabled": true,
+   "user": true
+  },
+  "com.google.android.ext.services": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.ext.shared": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.feedback": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.gms": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.gsf": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.inputmethod.latin": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.katniss": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.marvin.talkback": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.modulemetadata": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.onetimeinitializer": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.overlay.googlewebview": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.overlay.gtvsconfigx": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.overlay.gtvssettingsprovider": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.overlay.modules.ext.services": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.overlay.modules.modulemetadata.forframework": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.overlay.modules.permissioncontroller": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.overlay.modules.permissioncontroller.forframework": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.packageinstaller": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.partnersetup": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.permissioncontroller": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.play.games": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.syncadapters.calendar": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.tts": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.tungsten.setupwraith": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.tv.remote.service": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.videos": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.webview": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.youtube.tv": {
+   "enabled": true,
+   "user": false
+  },
+  "com.google.android.youtube.tvmusic": {
+   "enabled": true,
+   "user": false
+  },
+  "com.liskovsoft.smarttubetv.beta": {
+   "enabled": true,
+   "user": true
+  },
+  "com.netflix.ninja": {
+   "enabled": true,
+   "user": false
+  },
+  "com.netflix.tokenmanager": {
+   "enabled": true,
+   "user": false
+  },
+  "com.plexapp.android": {
+   "enabled": true,
+   "user": true
+  },
+  "com.realtek.airplay2": {
+   "enabled": true,
+   "user": false
+  },
+  "com.realtek.dongledetect": {
+   "enabled": true,
+   "user": false
+  },
+  "com.realtek.power": {
+   "enabled": true,
+   "user": false
+  },
+  "com.realtek.tv.overlay.framework": {
+   "enabled": true,
+   "user": false
+  },
+  "com.realtek.wifi.resources.overlay": {
+   "enabled": true,
+   "user": false
+  },
+  "com.sand.aircasttv": {
+   "enabled": true,
+   "user": true
+  },
+  "com.spotify.tv.android": {
+   "enabled": true,
+   "user": true
+  },
+  "com.tcl.UpdatePeripheral": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.airplay2": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.android.webview": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.autopair": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.browser": {
+   "enabled": true,
+   "user": true
+  },
+  "com.tcl.channelplus": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.dashboard": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.esticker": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.exhibit": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.factory.view": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.gamebar": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.globalkeyoverlay": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.guard": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.hearaid": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.initsetup": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.inputmethod.international": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.interactive": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.logkit": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.magiconnectfree": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.messagebox": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.miracast": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.ocean.instructions": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.partnercustomizer": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.providers.config": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.repairguide": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.smartalexa": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.suspension": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.systemserver": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.t_solo": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.ttvs": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.tv": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.tv.tclhome_passive": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.tvinput": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.ui_mediaCenter": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.useragreement": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.usercenter": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tcl.waterfall.overseas": {
+   "enabled": true,
+   "user": false
+  },
+  "com.tvos": {
+   "enabled": true,
+   "user": false
+  },
+  "com.vivaldi.browser": {
+   "enabled": true,
+   "user": true
+  },
+  "com.wbd.stream": {
+   "enabled": true,
+   "user": true
+  },
+  "com.zdf.android.mediathek": {
+   "enabled": true,
+   "user": true
+  },
+  "de.prosiebensat1digital.seventv": {
+   "enabled": true,
+   "user": true
+  },
+  "de.swr.avp.ard.tv": {
+   "enabled": true,
+   "user": true
+  },
+  "org.xbmc.kodi": {
+   "enabled": true,
+   "user": true
+  },
+  "tv.arte.plus7": {
+   "enabled": true,
+   "user": true
+  },
+  "tv.pluto.android": {
+   "enabled": true,
+   "user": true
+  },
+  "tv.samba.ssm.ui": {
+   "enabled": true,
+   "user": false
+  },
+  "tv.twitch.android.app": {
+   "enabled": true,
+   "user": true
+  },
+  "tv.vhx.worldofwonder": {
+   "enabled": true,
+   "user": true
+  },
+  "tv.wuaki.apptv": {
+   "enabled": true,
+   "user": true
+  }
+ }
+}

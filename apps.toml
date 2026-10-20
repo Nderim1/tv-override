@@ -1,0 +1,80 @@
+# App catalog: apps a profile can install by id ([apps].install) and roles they can play.
+#
+# source = "apk"  -> installed by tvctl from `file` (sha256 checked first; add new APKs only after verifying
+#                    them against the official release, see prompts/verify-apk.md)
+# source = "play" -> tvctl opens the Play Store page on the TV; the owner clicks Install
+#
+# Optional roles:
+#   home      = launcher activity (for [home].launcher)
+#   dream     = screensaver component (for [home].screensaver)
+#   a11y      = accessibility service the app needs (owner switches it on in Settings > Accessibility)
+#   autostart = true -> needs the vendor autostart app-op (TCL) to run its background service
+#   keymap    = true -> receives the [keys] mapping (Remote Remap)
+
+[projectivy]
+name = "Projectivy Launcher"
+package = "com.spocky.projengmenu"
+source = "play"
+home = "com.spocky.projengmenu/.ui.home.MainActivity"
+a11y = "com.spocky.projengmenu/com.spocky.projengmenu.services.ProjectivyAccessibilityService"
+a11y_label = "Projectivy Launcher"
+note = "Free; button remapping inside Projectivy needs Premium – use Remote Remap instead."
+
+[smarttube]
+name = "SmartTube"
+package = "org.smarttube.stable"
+source = "apk"
+file = "apks/SmartTube_stable_32.56_universal.apk"
+version = "32.56"
+sha256 = "4a35b90940612e048e4e9cb9e10379f7db1e84f30375994129f10a571ee04ce5"
+origin = "https://github.com/yuliskov/SmartTube/releases/tag/32.56s"
+replaces = ["com.liskovsoft.smarttubetv.beta", "com.liskovsoft.smarttubetv"]
+note = "Ad-free YouTube for TV. Package/key changed after the developer's 2025 key compromise; old builds are replaced and the owner signs in again."
+
+[kodi]
+name = "Kodi"
+package = "org.xbmc.kodi"
+source = "play"
+
+[aerialviews]
+name = "Aerial Views"
+package = "com.neilturner.aerialviews"
+source = "play"
+dream = "com.neilturner.aerialviews/.ui.screensaver.DreamActivity"
+
+[downloader]
+name = "Downloader"
+package = "com.esaba.downloader"
+source = "play"
+note = "Sideload APKs by URL/code on the TV itself."
+
+[remote-remap]
+name = "Remote Remap"
+package = "com.nde.tvremap"
+source = "apk"
+file = "remote-remap/remote-remap.apk"
+build = "remote-remap/build.sh"
+a11y = "com.nde.tvremap/com.nde.tvremap.RemapService"
+a11y_label = "Remote Remap"
+autostart = true
+keymap = true
+note = "Our own 16 KB remapper. Built locally; sha256 is not pinned because it changes on every build."
+
+# Screensaver-only entries (preinstalled packages)
+[google-ambient]
+name = "Google ambient screensaver"
+package = "com.google.android.apps.tv.dreamx"
+source = "system"
+dream = "com.google.android.apps.tv.dreamx/.service.Backdrop"
+
+[backdrop]
+name = "Backdrop"
+package = "com.google.android.backdrop"
+source = "system"
+dream = "com.google.android.backdrop/.Backdrop"
+
+[basic-colors]
+name = "Basic colours"
+package = "com.android.dreams.basic"
+source = "system"
+dream = "com.android.dreams.basic/.Colors"

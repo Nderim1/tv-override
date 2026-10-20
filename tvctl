@@ -1,0 +1,1736 @@
+#!/usr/bin/env python3
+"""tvctl – profile-driven setup of Android / Google TVs over ADB.
+
+  tvctl find                              find TVs on the network
+  tvctl init NAME --host IP               connect, detect, snapshot, write profiles/NAME.toml
+  tvctl inventory PROFILE [--class unknown] [--mem]
+  tvctl plan PROFILE                      what apply would change
+  tvctl apply PROFILE [--yes]             make the TV match the profile (safe to re-run)
+  tvctl restore PROFILE [PKG...|--all]    re-enable disabled packages, restore stock home
+  tvctl install PROFILE APP_ID [--force]  install one catalog app
+  tvctl keys capture|learn|set|rm|push PROFILE ...
+  tvctl status PROFILE [--reboot]
+  tvctl ui                                dashboard at http://127.0.0.1:8787 (auto-started by workflows)
+  tvctl ask --title Q [--kind ...]        ask the owner in the dashboard, print the answer (agent use)
+  tvctl inbox [--wait N]                  the owner's requests to the agent; --reply ID TEXT [--done]
+  tvctl notify --title T [--level ...]    post a note; --level need-chat = "come to the chat"
+  tvctl snapshot PROFILE
+
+Add --json to any command for machine-readable output (used by the LLM agent).
+Exit codes: 0 ok, 1 error, 2 waiting on the owner (manual step or confirmation).
+"""
+
+import argparse
+import os
+import threading
+import fnmatch
+import hashlib
+import json
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from ipaddress import ip_network
+from pathlib import Path
+
+if sys.version_info < (3, 11):
+    sys.exit("tvctl needs Python 3.11+ (tomllib)")
+import tomllib
+
+ROOT = Path(__file__).resolve().parent
+PRESETS_DIR = ROOT / "presets"
+PROFILES_DIR = ROOT / "profiles"
+STATE_DIR = ROOT / "state"
+UI_PORT = int(os.environ.get("TVCTL_UI_PORT", "8787"))
+UI_TOKEN_FILE = STATE_DIR / ".ui-token"
+CATALOG_FILE = ROOT / "apps.toml"
+
+EXIT_OK, EXIT_ERR, EXIT_USER = 0, 1, 2
+CLASS_PRIORITY = {"core": 0, "bloat": 1, "optional": 2}
+REMAP_RECEIVER = "com.nde.tvremap/.ConfigReceiver"
+ANIMATION_KEYS = ("window_animation_scale", "transition_animation_scale", "animator_duration_scale")
+
+
+class TvError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- adb / device
+
+def find_adb():
+    for cand in (shutil.which("adb"),
+                 Path.home() / "Library/Android/sdk/platform-tools/adb",
+                 Path.home() / "Android/Sdk/platform-tools/adb",
+                 "/opt/homebrew/bin/adb", "/usr/local/bin/adb"):
+        if cand and Path(cand).exists():
+            return str(cand)
+    raise TvError("adb not found – install Android platform-tools")
+
+
+def run(args, timeout=60):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise TvError(f"timed out: {' '.join(args[:4])}…")
+    return p.returncode, p.stdout.replace("\r", ""), p.stderr.replace("\r", "")
+
+
+class Device:
+    def __init__(self, host, port=5555):
+        self.addr = f"{host}:{port}"
+        self.adb_bin = find_adb()
+
+    def adb(self, *args, timeout=60):
+        return run([self.adb_bin, "-s", self.addr, *args], timeout=timeout)
+
+    def sh(self, script, timeout=60):
+        _, out, _ = self.adb("shell", script, timeout=timeout)
+        return out.strip()
+
+    def state(self):
+        _, out, err = self.adb("get-state", timeout=10)
+        text = (out + err).strip()
+        if "unauthorized" in text:
+            return "unauthorized"
+        return "device" if text == "device" else "offline"
+
+    def connect(self, wait=0):
+        """Connect; with wait>0 keep retrying (e.g. while the owner accepts the ADB prompt)."""
+        deadline = time.time() + wait
+        told = False
+        while True:
+            run([self.adb_bin, "connect", self.addr], timeout=15)
+            st = self.state()
+            if st == "device":
+                return
+            if time.time() >= deadline:
+                if st == "unauthorized":
+                    raise TvError("TV refused ADB: accept 'Allow USB debugging?' on the TV "
+                                  "(tick 'Always allow from this computer') and retry")
+                raise TvError(f"cannot reach {self.addr}: check the IP, that the TV is on, "
+                              "and that Developer options > USB debugging is on")
+            if st == "unauthorized" and not told:
+                print("→ Accept 'Allow USB debugging?' on the TV (tick 'Always allow')…", file=sys.stderr)
+                told = True
+            time.sleep(3)
+
+    def prop(self, name):
+        return self.sh(f"getprop {name}")
+
+    def props(self):
+        names = ["ro.product.manufacturer", "ro.product.model", "ro.product.device", "ro.product.name",
+                 "ro.build.version.release", "ro.build.version.sdk", "ro.serialno", "ro.product.cpu.abi"]
+        out = self.sh("; ".join(f'echo "{n}=$(getprop {n})"' for n in names))
+        return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+    def packages(self):
+        """{pkg: {"enabled": bool, "user": bool}} for every installed package."""
+        out = self.sh("pm list packages; echo ---; pm list packages -d; echo ---; pm list packages -3")
+        all_, disabled, user = (
+            {l.split(":", 1)[1].strip() for l in part.splitlines() if l.startswith("package:")}
+            for part in out.split("---"))
+        return {p: {"enabled": p not in disabled, "user": p in user} for p in sorted(all_)}
+
+    def setting(self, ns, key):
+        v = self.sh(f"settings get {ns} {key}")
+        return None if v == "null" else v
+
+    def home(self):
+        out = self.sh("cmd package resolve-activity --brief -a android.intent.action.MAIN "
+                      "-c android.intent.category.HOME")
+        return out.splitlines()[-1].strip() if out else ""
+
+    def a11y_enabled(self):
+        v = self.setting("secure", "enabled_accessibility_services") or ""
+        return [s for s in v.split(":") if s]
+
+    def running(self, pkg):
+        return bool(self.sh(f"pidof {pkg}"))
+
+    def version(self, pkg):
+        m = re.search(r"versionName=(\S+)", self.sh(f"dumpsys package {pkg}"))
+        return m.group(1) if m else None
+
+    def mem_available_mb(self):
+        m = re.search(r"MemAvailable:\s+(\d+)", self.sh("cat /proc/meminfo"))
+        return int(m.group(1)) // 1024 if m else None
+
+    def pss_by_process(self):
+        out = self.sh("dumpsys meminfo", timeout=90)
+        block = out.split("Total PSS by process:", 1)[-1].split("Total PSS by OOM", 1)[0]
+        res = {}
+        for m in re.finditer(r"([\d,]+)K: (\S+) \(pid", block):
+            res[m.group(2)] = int(m.group(1).replace(",", "")) // 1024
+        return res
+
+    def reboot_and_wait(self, timeout=240):
+        self.adb("reboot")
+        time.sleep(10)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            run([self.adb_bin, "connect", self.addr], timeout=10)
+            if self.state() == "device" and self.prop("sys.boot_completed") == "1":
+                time.sleep(15)  # let the launcher and services settle
+                return
+            time.sleep(5)
+        raise TvError(f"TV did not come back within {timeout // 60} minutes")
+
+    def tv_settings(self):
+        keys = [("secure", "screensaver_components"), ("secure", "screensaver_enabled")] + \
+               [("global", k) for k in ANIMATION_KEYS]
+        return {k: self.setting(ns, k) for ns, k in keys}
+
+    def broadcast(self, component, action, extras=""):
+        out = self.sh(f"am broadcast -f 32 -n {component} -a {action} {extras}")
+        m = re.search(r'result=(-?\d+)(?:, data="(.*)")?', out, re.S)
+        if not m:
+            raise TvError(f"broadcast failed: {out[-200:]}")
+        return int(m.group(1)), (m.group(2) or "")
+
+
+# ---------------------------------------------------------------- config
+
+def load_toml(path):
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def load_catalog():
+    return load_toml(CATALOG_FILE)
+
+
+def profile_path(arg):
+    p = Path(arg)
+    if p.suffix == ".toml" and p.exists():
+        return p
+    p = PROFILES_DIR / f"{arg}.toml"
+    if not p.exists():
+        raise TvError(f"no profile {p} (create one with: tvctl init {arg} --host IP)")
+    return p
+
+
+def load_profile(arg):
+    path = profile_path(arg)
+    prof = load_toml(path)
+    prof["_path"] = path
+    tv = prof.setdefault("tv", {})
+    if "host" not in tv:
+        raise TvError(f"{path}: [tv].host missing")
+    tv.setdefault("name", path.stem)
+    for section in ("apps", "home", "keys"):
+        prof.setdefault(section, {})
+    return prof
+
+
+def all_presets():
+    return {p.stem: load_toml(p) for p in sorted(PRESETS_DIR.glob("*.toml")) if not p.name.startswith("_")}
+
+
+def active_presets(names):
+    presets = all_presets()
+    missing = [n for n in names if n not in presets]
+    if missing:
+        raise TvError(f"unknown preset(s): {', '.join(missing)}")
+    return [p for n, p in presets.items() if n in names or p.get("preset", {}).get("always")]
+
+
+def detect_presets(props, pkgs):
+    found = []
+    for name, p in all_presets().items():
+        if p.get("preset", {}).get("always"):
+            continue
+        match = p.get("match", {})
+        manu = [m.lower() for m in match.get("manufacturer", [])]
+        if manu and props.get("ro.product.manufacturer", "").lower() in manu:
+            found.append(name)
+        elif any(pkg in pkgs for pkg in match.get("packages_any", [])):
+            found.append(name)
+    return found
+
+
+class Classifier:
+    def __init__(self, presets):
+        self.exact, self.globs = {}, []
+        for p in presets:
+            pname = p.get("preset", {}).get("name", "?")
+            for cls in CLASS_PRIORITY:
+                for pattern, note in p.get(cls, {}).items():
+                    entry = (cls, note, pname)
+                    if any(c in pattern for c in "*?["):
+                        self.globs.append((pattern, entry))
+                    elif pattern not in self.exact or CLASS_PRIORITY[cls] < CLASS_PRIORITY[self.exact[pattern][0]]:
+                        self.exact[pattern] = entry
+
+    def classify(self, pkg):
+        if pkg in self.exact:
+            return self.exact[pkg]
+        hits = [e for pat, e in self.globs if fnmatch.fnmatchcase(pkg, pat)]
+        return min(hits, key=lambda e: CLASS_PRIORITY[e[0]]) if hits else ("unknown", "", None)
+
+
+def merged(presets, section):
+    out = {}
+    for p in presets:
+        out.update(p.get(section, {}))
+    return out
+
+
+def stock_launcher(presets):
+    stock, home = [], None
+    for p in presets:
+        launcher = p.get("launcher", {})
+        stock += [s for s in launcher.get("stock", []) if s not in stock]
+        home = home or launcher.get("stock_home")
+    return stock, home
+
+
+def live_tv(presets):
+    """(protected packages, player package) from the presets' [live_tv] sections."""
+    pkgs, player = set(), None
+    for p in presets:
+        section = p.get("live_tv", {})
+        pkgs |= set(section.get("packages", []))
+        player = player or section.get("player")
+    return pkgs, player
+
+
+def live_tv_status(dev, presets, pkgs):
+    inputs = sorted(set(re.findall(r"TvInputInfo\{id=([^,]+),", dev.sh("dumpsys tv_input"))))
+    tuners = [i for i in inputs if not re.search(r"passthrough|hdmi", i, re.I)]
+    rows = dev.sh("content query --uri content://android.media.tv/channel --projection _id")
+    protected, player = live_tv(presets)
+    return {"tuner_inputs": tuners, "external_inputs": len(inputs) - len(tuners),
+            "channels": sum(1 for l in rows.splitlines() if l.startswith("Row:")),
+            "player": player, "player_enabled": bool(player and pkgs.get(player, {}).get("enabled")),
+            "protected_disabled": sorted(p for p in protected if p in pkgs and not pkgs[p]["enabled"])}
+
+
+# ---------------------------------------------------------------- state
+
+def state_dir(prof):
+    d = STATE_DIR / prof["tv"]["name"]
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def now_iso():
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def take_snapshot(dev, prof, filename=None):
+    snap = {"taken": now_iso(), "props": dev.props(), "settings": dev.tv_settings(), "packages": dev.packages()}
+    name = filename or f"snapshot-{datetime.now():%Y%m%d-%H%M%S}.json"
+    path = state_dir(prof) / name
+    path.write_text(json.dumps(snap, indent=1))
+    return path
+
+
+def log_history(prof, actions):
+    with open(state_dir(prof) / "history.jsonl", "a") as f:
+        for a in actions:
+            if a["status"] in ("done", "error"):
+                f.write(json.dumps({"time": now_iso(), **{k: v for k, v in a.items() if k != "fn"}}) + "\n")
+
+
+def perf(dev, pkgs=None):
+    """Performance snapshot: memory, swap, load, storage, top processes, package counts."""
+    out = dev.sh("cat /proc/meminfo; echo ---; cat /proc/loadavg; echo ---; cat /proc/uptime; echo ---; df -k /data")
+    mem_part, load_part, up_part, df_part = (out.split("---") + ["", "", "", ""])[:4]
+    mem = {m.group(1): int(m.group(2)) // 1024 for m in re.finditer(r"^(\w+):\s+(\d+) kB", mem_part, re.M)}
+    load = load_part.split()
+    df = df_part.strip().splitlines()[-1].split() if df_part.strip() else []
+    pss = dev.pss_by_process()
+    pkgs = pkgs if pkgs is not None else dev.packages()
+    return {
+        "time": now_iso(),
+        "mem_total_mb": mem.get("MemTotal"), "mem_available_mb": mem.get("MemAvailable"),
+        "swap_total_mb": mem.get("SwapTotal"),
+        "swap_used_mb": (mem.get("SwapTotal", 0) - mem.get("SwapFree", 0)) if "SwapTotal" in mem else None,
+        "load1": float(load[0]) if load else None, "load5": float(load[1]) if len(load) > 1 else None,
+        "uptime_s": int(float(up_part.split()[0])) if up_part.split() else None,
+        "storage_total_gb": round(int(df[1]) / 1048576, 1) if len(df) > 3 else None,
+        "storage_free_gb": round(int(df[3]) / 1048576, 1) if len(df) > 3 else None,
+        "processes": len(pss),
+        "top": [{"name": n, "mb": mb} for n, mb in sorted(pss.items(), key=lambda kv: -kv[1])[:12]],
+        "packages": {"total": len(pkgs), "enabled": sum(1 for i in pkgs.values() if i["enabled"]),
+                     "disabled": sum(1 for i in pkgs.values() if not i["enabled"]),
+                     "user": sum(1 for i in pkgs.values() if i["user"])},
+    }
+
+
+def runs_dir(name):
+    d = STATE_DIR / name / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def save_run(record):
+    clean = {**record, "rounds": [[{k: v for k, v in a.items() if k != "fn"} for a in r] for r in record["rounds"]]}
+    path = runs_dir(record["tv"]) / f"{record['id']}.json"
+    path.write_text(json.dumps(clean, indent=1))
+    return path
+
+
+def list_runs(name):
+    d = STATE_DIR / name / "runs"
+    if not d.exists():
+        return []
+    return [json.loads(p.read_text()) for p in sorted(d.glob("*.json"), reverse=True)]
+
+
+# ---------------------------------------------------------------- planning
+
+def action(step, target, what, detail="", status="todo", fn=None):
+    return {"step": step, "target": target, "action": what, "detail": detail, "status": status, "fn": fn}
+
+
+class Ctx:
+    def __init__(self, prof, dev):
+        self.prof, self.dev = prof, dev
+        self.catalog = load_catalog()
+        self.presets = active_presets(prof["tv"].get("presets", []))
+        self.classifier = Classifier(self.presets)
+        self.quirks = merged(self.presets, "quirks")
+        self.opened = set()
+        self.refresh()
+
+    def refresh(self):
+        self.pkgs = self.dev.packages()
+
+    def open_play_page(self, pkg):
+        if pkg not in self.opened:  # once per run, not on every re-check
+            self.opened.add(pkg)
+            self.dev.sh(f"am start -a android.intent.action.VIEW -d market://details?id={pkg}")
+
+    def app(self, app_id):
+        if app_id not in self.catalog:
+            raise TvError(f"'{app_id}' is not in apps.toml")
+        return self.catalog[app_id]
+
+    def installed(self, pkg):
+        return pkg in self.pkgs
+
+    def enabled(self, pkg):
+        return self.pkgs.get(pkg, {}).get("enabled", False)
+
+    def install_ids(self):
+        return list(self.prof["apps"].get("install", []))
+
+    def resolve_pkg(self, ref):
+        """Catalog id or package name -> package name."""
+        return self.catalog[ref]["package"] if ref in self.catalog else ref
+
+
+def check_identity(ctx):
+    want = ctx.prof["tv"].get("serial")
+    got = ctx.dev.prop("ro.serialno")
+    if want and got and want != got:
+        raise TvError(f"this is not {ctx.prof['tv']['name']}: serial {got} != profile {want}")
+
+
+def plan_baseline(ctx):
+    if (state_dir(ctx.prof) / "baseline.json").exists():
+        return []
+    return [action("baseline", "packages", "snapshot", "first run: save the untouched package state",
+                   fn=lambda: take_snapshot(ctx.dev, ctx.prof, "baseline.json"))]
+
+
+def install_apk_fn(ctx, app, force=False):
+    def fn():
+        path = ROOT / app["file"]
+        if not path.exists():
+            if app.get("build"):
+                raise TvError(f"{path} missing – build it: bash {app['build']}")
+            raise TvError(f"{path} missing")
+        if app.get("sha256"):
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if digest != app["sha256"]:
+                raise TvError(f"sha256 mismatch for {path.name}: {digest}")
+        code, out, err = ctx.dev.adb("install", "-r", str(path), timeout=300)
+        if "Success" not in out:
+            raise TvError((out + err).strip()[-300:])
+    return fn
+
+
+def plan_install(ctx):
+    acts = []
+    for app_id in ctx.install_ids():
+        app = ctx.app(app_id)
+        pkg = app["package"]
+        if ctx.installed(pkg):
+            if not ctx.enabled(pkg):
+                acts.append(action("install", pkg, "enable", app["name"],
+                                   fn=lambda p=pkg: pm(ctx, "enable", p)))
+            continue
+        if app["source"] == "apk":
+            acts.append(action("install", pkg, "install", f"{app['name']} from {app['file']}",
+                               fn=install_apk_fn(ctx, app)))
+        elif app["source"] == "play" and not ctx.installed("com.android.vending"):
+            acts.append(action("install", pkg, "install", f"no Play Store on this device: add a verified APK for "
+                               f"{app['name']} to apps.toml (prompts/verify-apk.md)", status="blocked"))
+        elif app["source"] == "play":
+            acts.append(action("install", pkg, "install", f"Install {app['name']} on the Play Store page "
+                               "now open on the TV, then re-run apply", status="manual",
+                               fn=lambda p=pkg: ctx.open_play_page(p)))
+        else:
+            acts.append(action("install", pkg, "missing", f"{app['name']} is not on this TV", status="skipped"))
+    return acts
+
+
+def plan_autostart(ctx):
+    op = ctx.quirks.get("autostart_appop")
+    if not op:
+        return []
+    acts = []
+    for app_id in ctx.install_ids():
+        app = ctx.app(app_id)
+        pkg = app["package"]
+        if app.get("autostart") and ctx.installed(pkg):
+            if "allow" not in ctx.dev.sh(f"appops get {pkg} {op}"):
+                acts.append(action("autostart", pkg, "allow", f"vendor autostart app-op {op}",
+                                   fn=lambda p=pkg: ctx.dev.sh(f"appops set {p} {op} allow")))
+    return acts
+
+
+def plan_a11y(ctx):
+    acts = []
+    enabled = ctx.dev.a11y_enabled()
+    for app_id in ctx.install_ids():
+        app = ctx.app(app_id)
+        pkg, comp = app["package"], app.get("a11y")
+        if not comp or not ctx.installed(pkg):
+            continue
+        label = app.get("a11y_label", app["name"])
+        if comp not in enabled:
+            acts.append(action("a11y", pkg, "enable-service",
+                               f"On the TV: Settings → System → Accessibility → {label} → On", status="manual"))
+        elif not ctx.dev.running(pkg):
+            acts.append(action("a11y", pkg, "rebind-service",
+                               f"On the TV: Settings → System → Accessibility → {label} → Off, then On",
+                               status="manual"))
+    return acts
+
+
+def keymap_string(ctx):
+    parts = []
+    for scan, k in sorted(ctx.prof["keys"].items(), key=lambda kv: int(kv[0])):
+        if "action" in k:
+            parts.append(f"{int(scan)}=action:{ctx.resolve_pkg(k['package'])}/{k['action']}")
+        else:
+            parts.append(f"{int(scan)}=app:{ctx.resolve_pkg(k['open'])}")
+    return ";".join(parts)
+
+
+def keymap_app(ctx):
+    for app_id in ctx.install_ids():
+        app = ctx.app(app_id)
+        if app.get("keymap"):
+            return app
+    return None
+
+
+def push_keymap(ctx, raw):
+    code, data = ctx.dev.broadcast(REMAP_RECEIVER, "com.nde.tvremap.SET_KEYMAP", f"--es keymap {shlex.quote(raw)}")
+    if code != 1:
+        raise TvError(f"Remote Remap rejected the key map: {data}")
+
+
+def plan_keymap(ctx):
+    app = keymap_app(ctx)
+    if not app or not ctx.prof["keys"]:
+        return []
+    if not ctx.installed(app["package"]):
+        return [action("keys", app["package"], "push", "waiting for Remote Remap to be installed", status="blocked")]
+    raw = keymap_string(ctx)
+    _, current = ctx.dev.broadcast(REMAP_RECEIVER, "com.nde.tvremap.GET_KEYMAP")
+    if current == raw:
+        return []
+    return [action("keys", app["package"], "push", raw, fn=lambda: push_keymap(ctx, raw))]
+
+
+def pm(ctx, verb, pkg):
+    cmd = {"disable": f"pm disable-user --user 0 {pkg}", "enable": f"pm enable --user 0 {pkg}"}[verb]
+    out = ctx.dev.sh(cmd)
+    if "new state" not in out:
+        raise TvError(out[-200:] or f"{verb} failed")
+
+
+def plan_packages(ctx):
+    apps = ctx.prof["apps"]
+    keep = set(apps.get("keep", []))
+    wanted_off = set(apps.get("disable", []))
+    protected = {ctx.app(i)["package"] for i in ctx.install_ids()}
+    live, _ = live_tv(ctx.presets)
+    acts = []
+    for pkg in sorted(ctx.pkgs):
+        if pkg in live:
+            if not ctx.enabled(pkg):
+                acts.append(action("live-tv", pkg, "enable", "live TV package must stay on",
+                                   fn=lambda p=pkg: pm(ctx, "enable", p)))
+            elif pkg in wanted_off:
+                acts.append(action("packages", pkg, "disable", "refused: needed for live TV", status="error"))
+            continue
+        cls, note, _ = ctx.classifier.classify(pkg)
+        on = ctx.enabled(pkg)
+        if pkg in keep:
+            if not on:
+                acts.append(action("packages", pkg, "enable", "listed in keep", fn=lambda p=pkg: pm(ctx, "enable", p)))
+            continue
+        if pkg in wanted_off:
+            if cls == "core":
+                acts.append(action("packages", pkg, "disable", f"refused: core package ({note})", status="error"))
+            elif pkg in protected:
+                acts.append(action("packages", pkg, "disable", "refused: in [apps].install", status="error"))
+            elif on:
+                acts.append(action("packages", pkg, "disable", note or "listed in disable",
+                                   fn=lambda p=pkg: pm(ctx, "disable", p)))
+        elif cls == "bloat" and on and pkg not in protected:
+            acts.append(action("packages", pkg, "disable", note, fn=lambda p=pkg: pm(ctx, "disable", p)))
+    for pkg in sorted(wanted_off - set(ctx.pkgs)):
+        acts.append(action("packages", pkg, "disable", "not installed on this TV", status="skipped"))
+    return acts
+
+
+def uninstall_fn(ctx, pkg):
+    def fn():
+        _, out, err = ctx.dev.adb("uninstall", pkg, timeout=120)
+        if "Success" not in out:
+            raise TvError((out + err).strip()[-200:])
+    return fn
+
+
+def plan_user_apps(ctx):
+    apps = ctx.prof["apps"]
+    acts = []
+    wanted = {ctx.app(i)["package"] for i in ctx.install_ids()}
+    replaced = {old for i in ctx.install_ids() for old in ctx.app(i).get("replaces", [])}
+    for pkg in sorted(replaced & set(ctx.pkgs)):
+        acts.append(action("user-apps", pkg, "uninstall", "replaced by a newer catalog app (owner signs in again)",
+                           status="confirm", fn=uninstall_fn(ctx, pkg)))
+    for pkg in sorted(set(apps.get("uninstall", [])) - replaced):
+        if pkg in ctx.pkgs and pkg not in wanted:
+            acts.append(action("user-apps", pkg, "uninstall", "listed in [apps].uninstall (deletes its data)",
+                               status="confirm", fn=uninstall_fn(ctx, pkg)))
+    if apps.get("user_apps", "keep-others") == "remove-others":
+        keep = set(apps.get("keep", [])) | wanted | replaced | set(apps.get("uninstall", []))
+        for pkg, info in ctx.pkgs.items():
+            if info["user"] and pkg not in keep:
+                acts.append(action("user-apps", pkg, "uninstall", "user app not in install/keep (deletes its data)",
+                                   status="confirm", fn=uninstall_fn(ctx, pkg)))
+    return acts
+
+
+def plan_launcher(ctx):
+    choice = ctx.prof["home"].get("launcher")
+    if not choice:
+        return []
+    stock, stock_home = stock_launcher(ctx.presets)
+    acts = []
+    if choice == "stock":
+        for pkg in stock:
+            if ctx.installed(pkg) and not ctx.enabled(pkg):
+                acts.append(action("home", pkg, "enable", "restore stock home", fn=lambda p=pkg: pm(ctx, "enable", p)))
+        if stock_home and ctx.dev.home() != stock_home:
+            acts.append(action("home", stock_home, "set-home", "stock home",
+                               fn=lambda: ctx.dev.sh(f"cmd package set-home-activity --user 0 {stock_home}")))
+        return acts
+    app = ctx.app(choice)
+    pkg, home = app["package"], app.get("home")
+    if not home:
+        raise TvError(f"apps.toml: {choice} has no `home` activity")
+    missing = []
+    if not ctx.installed(pkg):
+        missing.append(f"{app['name']} installed")
+    if app.get("a11y") and app["a11y"] not in ctx.dev.a11y_enabled():
+        missing.append(f"its accessibility service on")
+    if missing:
+        return [action("home", pkg, "replace-stock", "waiting for: " + ", ".join(missing), status="blocked")]
+    if ctx.dev.home() != home or any(ctx.enabled(p) for p in stock):
+        def fn():
+            for p in stock:  # stock home and setup wizard go together, see presets/google-tv.toml
+                if ctx.enabled(p):
+                    pm(ctx, "disable", p)
+            ctx.dev.sh(f"cmd package set-home-activity --user 0 {home}")
+            if ctx.dev.home() != home:
+                raise TvError(f"home resolves to {ctx.dev.home()} instead of {home}")
+        acts.append(action("home", pkg, "replace-stock", f"set {app['name']} as home, disable {', '.join(stock)}", fn=fn))
+    return acts
+
+
+def plan_screensaver(ctx):
+    choice = ctx.prof["home"].get("screensaver")
+    if not choice:
+        return []
+    app = ctx.app(choice)
+    comp = app.get("dream")
+    if not comp:
+        raise TvError(f"apps.toml: {choice} has no `dream` component")
+    if not ctx.enabled(app["package"]):
+        return [action("screensaver", comp, "set", f"waiting for {app['name']} to be installed/enabled", status="blocked")]
+    if ctx.dev.setting("secure", "screensaver_components") == comp and ctx.dev.setting("secure", "screensaver_enabled") == "1":
+        return []
+    def fn():
+        ctx.dev.sh(f"settings put secure screensaver_components {comp}; settings put secure screensaver_enabled 1")
+    return [action("screensaver", comp, "set", app["name"], fn=fn)]
+
+
+def plan_animations(ctx):
+    scale = ctx.prof["home"].get("animation_scale")
+    if scale is None:
+        return []
+    want = f"{float(scale):g}"
+    current = {k: ctx.dev.setting("global", k) for k in ANIMATION_KEYS}
+    if all(v is not None and f"{float(v):g}" == want for v in current.values()):
+        return []
+    return [action("animations", "global", "set", f"{want}x",
+                   fn=lambda: ctx.dev.sh("; ".join(f"settings put global {k} {want}" for k in ANIMATION_KEYS)))]
+
+
+PLANNERS = [plan_baseline, plan_install, plan_autostart, plan_a11y, plan_keymap,
+            plan_packages, plan_user_apps, plan_launcher, plan_screensaver, plan_animations]
+
+
+def make_plan(ctx):
+    acts = []
+    for planner in PLANNERS:
+        acts += planner(ctx)
+    return acts
+
+
+# ---------------------------------------------------------------- output
+
+def public(acts):
+    return [{k: v for k, v in a.items() if k != "fn"} for a in acts]
+
+
+def emit(args, data, human):
+    if args.json:
+        print(json.dumps(data, indent=1))
+    else:
+        human()
+
+
+def print_actions(acts):
+    if not acts:
+        print("  nothing to do – the TV matches the profile")
+    for a in acts:
+        print(f"  [{a['status']:<8}] {a['step']:<11} {a['action']:<14} {a['target']}"
+              + (f"\n{'':>39}{a['detail']}" if a["detail"] else ""))
+
+
+# ---------------------------------------------------------------- commands
+
+def ctx_for(args):
+    prof = load_profile(args.profile)
+    dev = Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
+    dev.connect(wait=getattr(args, "wait", 0))
+    ctx = Ctx(prof, dev)
+    check_identity(ctx)
+    return ctx
+
+
+def cmd_plan(args):
+    ensure_ui()
+    ctx = ctx_for(args)
+    acts = make_plan(ctx)
+    emit(args, {"tv": ctx.prof["tv"]["name"], "actions": public(acts)},
+         lambda: (print(f"Plan for {ctx.prof['tv']['name']} ({ctx.dev.addr}):"), print_actions(acts)))
+    return EXIT_OK
+
+
+def confirm(question):
+    if not sys.stdin.isatty():
+        return False
+    return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+
+
+# ---------------------------------------------------------------- workflow engine
+
+class Hooks:
+    """How a Workflow talks to its driver (terminal, dashboard). Override what you need."""
+    def emit(self, event): pass
+    def confirm(self, actions):
+        """Return the indexes of `actions` (all status=confirm) the owner approved."""
+        return set()
+    def wait(self, waiting):
+        """Owner has to act on the TV. Return True to re-check, False to stop."""
+        return False
+    def stopped(self):
+        return False
+
+
+class Workflow:
+    """One run: connect → measure → plan → apply rounds (pausing for the owner) → reboot → measure → save.
+
+    mode: "apply" | "plan" | "verify" (reboot + measure) | "restore" (back to the TV's defaults)
+    """
+    def __init__(self, profile, mode="apply", hooks=None, yes=False, reboot=False, measure=True, source="cli"):
+        self.profile_name, self.mode, self.hooks = profile, mode, hooks or Hooks()
+        self.yes, self.reboot, self.measure, self.source = yes, reboot, measure, source
+        self.ctx = None
+        self.record = {"id": datetime.now().strftime("%Y%m%d-%H%M%S"), "tv": None, "mode": mode, "source": source,
+                       "started": now_iso(), "finished": None, "outcome": "running", "phases": [],
+                       "perf_before": None, "perf_after": None, "rounds": [], "summary": {}, "status": None}
+
+    def emit(self, type_, **data):
+        self.hooks.emit({"type": type_, "tv": self.record["tv"], "run": self.record["id"], "time": now_iso(), **data})
+
+    def phase(self, name, fn):
+        entry = {"name": name, "status": "running", "started": now_iso()}
+        self.record["phases"].append(entry)
+        self.emit("phase", name=name, status="running")
+        try:
+            result = fn()
+            entry.update(status="done", finished=now_iso())
+            self.emit("phase", name=name, status="done")
+            return result
+        except Exception as e:
+            entry.update(status="error", finished=now_iso(), detail=str(e))
+            self.emit("phase", name=name, status="error", detail=str(e))
+            raise
+
+    def run(self):
+        prof = load_profile(self.profile_name)
+        self.record["tv"] = prof["tv"]["name"]
+        self.emit("run", status="running", mode=self.mode, source=self.source)
+        try:
+            self.phase("connect", lambda: self._connect(prof))
+            if self.measure:
+                self.record["perf_before"] = self.phase("measure-before", self._measure)
+                self.emit("perf", which="before", data=self.record["perf_before"])
+            if self.mode == "plan":
+                acts = self.phase("plan", lambda: make_plan(self.ctx))
+                self._round(acts, execute=False)
+                self.record["outcome"] = "ok"
+            elif self.mode == "apply":
+                self.phase("apply", self._apply)
+            elif self.mode == "restore":
+                self.phase("restore", self._restore)
+            if self.mode != "plan" and self.record["outcome"] in ("ok", "running") and \
+                    (self.mode == "verify" or (self.reboot and self.record["summary"].get("changed"))):
+                self.phase("reboot", self.ctx.dev.reboot_and_wait)
+                self.ctx.refresh()
+            if self.measure and self.mode != "plan":
+                self.record["perf_after"] = self.phase("measure-after", self._measure)
+                self.emit("perf", which="after", data=self.record["perf_after"])
+            self.record["status"] = self.phase("verify", lambda: status_data(self.ctx))
+            if self.record["outcome"] == "running":
+                self.record["outcome"] = "ok"
+        except StopRun:
+            self.record["outcome"] = "stopped"
+        except Exception as e:  # report every failure to the driver, then re-raise for the CLI
+            self.record["outcome"] = "error"
+            self.record["error"] = str(e)
+            self.emit("log", level="error", msg=str(e))
+        finally:
+            self.record["finished"] = now_iso()
+            if self.record["tv"] and self.mode != "plan":
+                save_run(self.record)
+            self.emit("run", status=self.record["outcome"], record=self.summary())
+        return self.record
+
+    def summary(self):
+        r = self.record
+        pb, pa = r["perf_before"] or {}, r["perf_after"] or {}
+        return {"id": r["id"], "tv": r["tv"], "mode": r["mode"], "source": r["source"], "outcome": r["outcome"],
+                "started": r["started"], "finished": r["finished"], "summary": r["summary"],
+                "mem_before": pb.get("mem_available_mb"), "mem_after": pa.get("mem_available_mb"),
+                "error": r.get("error")}
+
+    # -- phases
+
+    def _connect(self, prof):
+        dev = Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
+        dev.connect(wait=30)
+        self.ctx = Ctx(prof, dev)
+        check_identity(self.ctx)
+
+    def _measure(self):
+        return perf(self.ctx.dev, self.ctx.pkgs)
+
+    def _check_stop(self):
+        if self.hooks.stopped():
+            raise StopRun()
+
+    def _round(self, acts, execute=True):
+        n = len(self.record["rounds"])
+        for i, a in enumerate(acts):
+            a["index"] = i
+        self.record["rounds"].append(acts)
+        self.emit("round", n=n, actions=public(acts), execute=execute)
+        if not execute:
+            return
+        confirms = [a for a in acts if a["status"] == "confirm"]
+        if confirms:
+            approved = set(range(len(confirms))) if self.yes else self.hooks.confirm(public(confirms))
+            for j, a in enumerate(confirms):
+                a["status"] = "todo" if j in approved else "declined"
+                self.emit("action", n=n, **public([a])[0])
+        for a in acts:
+            self._check_stop()
+            if a["status"] not in ("todo", "manual") or not a["fn"]:
+                continue
+            if a["status"] == "todo":
+                a["status"] = "running"
+                self.emit("action", n=n, **public([a])[0])
+            try:
+                a["fn"]()
+                if a["status"] == "running":
+                    a["status"] = "done"
+            except TvError as e:
+                a["status"], a["detail"] = "error", str(e)
+            self.emit("action", n=n, **public([a])[0])
+        log_history(self.ctx.prof, acts)
+
+    def _apply(self):
+        changed = 0
+        while True:
+            self._check_stop()
+            acts = make_plan(self.ctx)
+            self._round(acts)
+            changed += sum(1 for a in acts if a["status"] == "done")
+            waiting = [a for a in acts if a["status"] in ("manual", "blocked")]
+            self.ctx.refresh()
+            if len(self.record["rounds"]) >= 8:
+                break
+            if any(a["status"] == "done" for a in acts) and not waiting:
+                continue  # e.g. an install unblocked a later step
+            if waiting:
+                self.emit("waiting", items=public(waiting))
+                if self.hooks.wait(public(waiting)):
+                    self.ctx.refresh()
+                    continue
+            break
+        final = self.record["rounds"][-1]
+        count = lambda *st: sum(1 for r in self.record["rounds"] for a in r if a["status"] in st)
+        self.record["summary"] = {
+            "changed": changed,
+            "disabled": sum(1 for r in self.record["rounds"] for a in r if a["status"] == "done" and a["action"] == "disable"),
+            "uninstalled": sum(1 for r in self.record["rounds"] for a in r if a["status"] == "done" and a["action"] == "uninstall"),
+            "installed": sum(1 for r in self.record["rounds"] for a in r if a["status"] == "done" and a["action"] == "install"),
+            "errors": count("error"),
+            "waiting": [public([a])[0] for a in final if a["status"] in ("manual", "blocked", "declined")],
+        }
+        if any(a["status"] == "error" for a in final):
+            self.record["outcome"] = "error"
+        elif any(a["status"] in ("manual", "blocked") for a in final):
+            self.record["outcome"] = "waiting"
+        else:
+            self.record["outcome"] = "ok"
+
+    def _restore(self):
+        acts = restore_defaults_plan(self.ctx)
+        self._round(acts)
+        self.record["summary"] = {"changed": sum(1 for a in acts if a["status"] == "done"),
+                                  "errors": sum(1 for a in acts if a["status"] == "error"),
+                                  "reinstall": restore_gone(self.ctx)}
+        self.record["outcome"] = "error" if self.record["summary"]["errors"] else "ok"
+
+
+class StopRun(Exception):
+    pass
+
+
+def restore_defaults_plan(ctx):
+    """Back to the TV's own defaults: every package on, stock home, baseline screensaver/animations."""
+    acts = []
+    for pkg in sorted(p for p, i in ctx.pkgs.items() if not i["enabled"]):
+        acts.append(action("restore", pkg, "enable", ctx.classifier.classify(pkg)[1],
+                           fn=lambda p=pkg: pm(ctx, "enable", p)))
+    stock, stock_home = stock_launcher(ctx.presets)
+    if stock_home and ctx.dev.home() != stock_home:
+        acts.append(action("restore", stock_home, "set-home", "stock home",
+                           fn=lambda: ctx.dev.sh(f"cmd package set-home-activity --user 0 {stock_home}")))
+    baseline = state_dir(ctx.prof) / "baseline.json"
+    settings = json.loads(baseline.read_text()).get("settings", {}) if baseline.exists() else {}
+    defaults = {"screensaver_components": settings.get("screensaver_components"),
+                **{k: settings.get(k) or "1.0" for k in ANIMATION_KEYS}}
+    current = ctx.dev.tv_settings()
+    for key, value in defaults.items():
+        if value and current.get(key) != value:
+            ns = "secure" if key.startswith("screensaver") else "global"
+            acts.append(action("restore", key, "set", value,
+                               fn=lambda ns=ns, k=key, v=value: ctx.dev.sh(f"settings put {ns} {k} {shlex.quote(v)}")))
+    return acts
+
+
+def restore_gone(ctx):
+    baseline = state_dir(ctx.prof) / "baseline.json"
+    if not baseline.exists():
+        return []
+    before = json.loads(baseline.read_text())["packages"]
+    return sorted(p for p, i in before.items() if i["user"] and p not in ctx.pkgs)
+
+
+class CliHooks(Hooks):
+    """Terminal driver: prints progress, asks on the TTY, mirrors events to the dashboard if it runs."""
+    def __init__(self, args):
+        self.args = args
+        self.interactive = sys.stdin.isatty() and not args.json
+        self.ui = UiClient()
+
+    def emit(self, event):
+        self.ui.send(event)
+        if self.args.json:
+            return
+        t = event["type"]
+        if t == "phase" and event["status"] != "done":
+            print(f"» {event['name']} {event['status']}" + (f": {event.get('detail')}" if event.get("detail") else ""))
+        elif t == "round" and not event["execute"]:
+            print_actions(event["actions"])
+        elif t == "action" and event["status"] not in ("running",):
+            print_actions([event])
+        elif t == "perf":
+            d = event["data"]
+            print(f"  RAM available {d['mem_available_mb']} MB of {d['mem_total_mb']} MB, "
+                  f"swap used {d['swap_used_mb']} MB, load {d['load1']}")
+
+    def confirm(self, actions):
+        if not self.interactive:
+            return set()
+        return {i for i, a in enumerate(actions) if confirm(f"  {a['action']} {a['target']} – {a['detail']}?")}
+
+    def wait(self, waiting):
+        if not self.interactive or getattr(self.args, "no_wait", False):
+            return False
+        print("\nOn the TV:")
+        for a in waiting:
+            print(f"  • {a['detail']}")
+        input("Press Enter when done to re-check (Ctrl-C to stop)… ")
+        return True
+
+
+def cmd_apply(args):
+    ensure_ui()
+    wf = Workflow(args.profile, "apply", CliHooks(args), yes=args.yes, reboot=args.reboot,
+                  measure=args.measure, source="cli")
+    rec = wf.run()
+    if rec["outcome"] == "error" and rec.get("error"):
+        raise TvError(rec["error"])
+    final = rec["rounds"][-1] if rec["rounds"] else []
+    errors = [a for a in final if a["status"] == "error"]
+    waiting = [a for a in final if a["status"] in ("manual", "blocked", "declined")]
+    if args.json:
+        print(json.dumps({"tv": rec["tv"], "run": rec["id"], "outcome": rec["outcome"],
+                          "rounds": [public(r) for r in rec["rounds"]], "waiting_on_owner": public(waiting),
+                          "errors": public(errors), "perf_before": rec["perf_before"], "perf_after": rec["perf_after"]},
+                         indent=1))
+    elif rec["outcome"] == "ok":
+        print("✓ TV matches the profile")
+    return EXIT_ERR if errors else EXIT_USER if waiting else EXIT_OK
+
+
+def cmd_restore(args):
+    ctx = ctx_for(args)
+    if args.defaults:
+        ensure_ui()
+        rec = Workflow(args.profile, "restore", CliHooks(args), measure=False).run()
+        if args.json:
+            print(json.dumps({"outcome": rec["outcome"], "actions": public(rec["rounds"][-1] if rec["rounds"] else []),
+                              "reinstall": rec["summary"].get("reinstall", [])}, indent=1))
+        elif rec["summary"].get("reinstall"):
+            print("\nUninstalled since baseline (reinstall from the Play Store if wanted):\n  "
+                  + "\n  ".join(rec["summary"]["reinstall"]))
+        print("Note: the next `tvctl apply` applies the profile again.", file=sys.stderr)
+        return EXIT_ERR if rec["outcome"] == "error" else EXIT_OK
+    stock, stock_home = stock_launcher(ctx.presets)
+    targets = args.packages or ([p for p, i in ctx.pkgs.items() if not i["enabled"]] if args.all else [])
+    if not targets:
+        raise TvError("name packages to re-enable, or use --all / --defaults")
+    acts = []
+    for pkg in targets:
+        if not ctx.installed(pkg):
+            acts.append(action("restore", pkg, "enable", "not installed", status="skipped"))
+            continue
+        try:
+            pm(ctx, "enable", pkg)
+            acts.append(action("restore", pkg, "enable", status="done"))
+        except TvError as e:
+            acts.append(action("restore", pkg, "enable", str(e), status="error"))
+    if stock_home and any(p in targets for p in stock):
+        ctx.dev.sh(f"cmd package set-home-activity --user 0 {stock_home}")
+        acts.append(action("restore", stock_home, "set-home", "stock home", status="done"))
+    ctx.refresh()
+    gone = restore_gone(ctx)
+    log_history(ctx.prof, acts)
+    emit(args, {"actions": public(acts), "uninstalled_since_baseline": gone}, lambda: (
+        print_actions(acts),
+        gone and print("\nUninstalled since baseline (reinstall from the Play Store if wanted):\n  " + "\n  ".join(gone))))
+    print("Note: restored packages may be disabled again by the next `tvctl apply` unless the profile changes.",
+          file=sys.stderr)
+    return EXIT_OK
+
+
+def cmd_install(args):
+    ctx = ctx_for(args)
+    app = ctx.app(args.app_id)
+    if ctx.installed(app["package"]) and not args.force:
+        print(f"{app['name']} already installed ({ctx.dev.version(app['package'])}); use --force to reinstall")
+        return EXIT_OK
+    if app["source"] != "apk":
+        ctx.dev.sh(f"am start -a android.intent.action.VIEW -d market://details?id={app['package']}")
+        print(f"Opened the Play Store page for {app['name']} on the TV – click Install there.")
+        return EXIT_USER
+    install_apk_fn(ctx, app)()
+    print(f"✓ installed {app['name']} {ctx.dev.version(app['package']) or ''}")
+    return EXIT_OK
+
+
+def inventory_rows(ctx, mem=False, with_plan=False):
+    """Every package with its class, profile decision and (optionally) RAM and planned effect."""
+    pss = ctx.dev.pss_by_process() if mem else {}
+    catalog_names = {a["package"]: (i, a["name"]) for i, a in ctx.catalog.items()}
+    apps = ctx.prof["apps"]
+    keep, off, rm = set(apps.get("keep", [])), set(apps.get("disable", [])), set(apps.get("uninstall", []))
+    installs = {ctx.app(i)["package"] for i in ctx.install_ids()}
+    live, _ = live_tv(ctx.presets)
+    effects = {}
+    if with_plan:
+        for a in make_plan(ctx):
+            if a["status"] != "skipped":
+                effects[a["target"]] = f"{a['action']} ({a['status']})" if a["status"] not in ("todo",) else a["action"]
+    rows = []
+    for pkg, info in ctx.pkgs.items():
+        cls, note, preset = ctx.classifier.classify(pkg)
+        if info["user"] and cls == "unknown":
+            cls = "user"
+            if pkg in catalog_names:
+                note = f"{catalog_names[pkg][1]} (catalog: {catalog_names[pkg][0]})"
+        decision = ("install" if pkg in installs else "keep" if pkg in keep else "disable" if pkg in off
+                    else "uninstall" if pkg in rm else "auto")
+        locked = "live-tv" if pkg in live else "core" if cls == "core" else "catalog" if pkg in installs \
+            else "unknown" if cls == "unknown" else None
+        rows.append({"package": pkg, "enabled": info["enabled"], "user": info["user"], "class": cls, "note": note,
+                     "preset": preset, "decision": decision, "locked": locked, "effect": effects.get(pkg),
+                     "pss_mb": sum(v for proc, v in pss.items() if proc == pkg or proc.startswith(pkg + ":"))
+                     if pss else None})
+    return rows
+
+
+def cmd_inventory(args):
+    ctx = ctx_for(args)
+    rows = inventory_rows(ctx, mem=args.mem)
+    if args.cls:
+        rows = [r for r in rows if r["class"] == args.cls]
+    def human():
+        for r in rows:
+            mem = f"{r['pss_mb']:>4} MB " if r["pss_mb"] else ("        " if args.mem else "")
+            print(f"{'on ' if r['enabled'] else 'off'} {r['class']:<8} {mem}{r['package']:<48} {r['note']}")
+        counts = {}
+        for r in rows:
+            counts[r["class"]] = counts.get(r["class"], 0) + 1
+        print("\n" + ", ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
+    emit(args, rows, human)
+    return EXIT_OK
+
+
+def cmd_snapshot(args):
+    ctx = ctx_for(args)
+    path = take_snapshot(ctx.dev, ctx.prof)
+    emit(args, {"snapshot": str(path)}, lambda: print(f"saved {path.relative_to(ROOT)}"))
+    return EXIT_OK
+
+
+def status_data(ctx):
+    dev = ctx.dev
+    props = dev.props()
+    focus = re.search(r"mResumedActivity: ActivityRecord\{\S+ \S+ (\S+)", dev.sh("dumpsys activity activities"))
+    services = []
+    for app_id in ctx.install_ids():
+        app = ctx.app(app_id)
+        if app.get("a11y"):
+            services.append({"app": app_id, "enabled": app["a11y"] in dev.a11y_enabled(),
+                             "running": dev.running(app["package"])})
+    keymap = None
+    km = keymap_app(ctx)
+    if km and ctx.installed(km["package"]):
+        keymap = dev.broadcast(REMAP_RECEIVER, "com.nde.tvremap.GET_KEYMAP")[1]
+    return {
+        "tv": ctx.prof["tv"]["name"], "address": dev.addr,
+        "model": f"{props.get('ro.product.manufacturer')} {props.get('ro.product.model')} ({props.get('ro.product.name')})",
+        "android": props.get("ro.build.version.release"), "serial": props.get("ro.serialno"),
+        "home": dev.home(), "on_screen": focus.group(1) if focus else None,
+        "accessibility_services": services,
+        "screensaver": dev.setting("secure", "screensaver_components"),
+        "animation_scale": dev.setting("global", "window_animation_scale"),
+        "mem_available_mb": dev.mem_available_mb(),
+        "disabled_packages": sum(1 for i in ctx.pkgs.values() if not i["enabled"]),
+        "user_apps": sorted(p for p, i in ctx.pkgs.items() if i["user"]),
+        "keymap": keymap,
+        "live_tv": live_tv_status(dev, ctx.presets, ctx.pkgs),
+        "pending_changes": len([a for a in make_plan(ctx) if a["status"] not in ("skipped",)]),
+    }
+
+
+def cmd_status(args):
+    ensure_ui()
+    ctx = ctx_for(args)
+    if args.reboot:
+        print("rebooting…", file=sys.stderr)
+        ctx.dev.reboot_and_wait()
+        ctx.refresh()
+    data = status_data(ctx)
+    def human():
+        for k, v in data.items():
+            print(f"{k:>24}: {v}")
+    emit(args, data, human)
+    return EXIT_OK
+
+
+# ---- profile editing (dashboard)
+
+def set_toml_array(text, section, key, values):
+    """Rewrite `key = [...]` inside [section], keeping per-item comments of entries that stay."""
+    sec = re.search(rf"^\[{re.escape(section)}\]\n(?:(?!^\[).*\n?)*", text, re.M)
+    if not sec:
+        raise TvError(f"profile has no [{section}] section")
+    body = sec.group(0)
+    m = re.search(rf"^{key}\s*=\s*\[(.*?)\]", body, re.M | re.S)
+    old_lines = {}
+    if m:
+        for line in m.group(1).splitlines():
+            q = re.search(r'"([^"]+)"', line)
+            if q:
+                old_lines[q.group(1)] = line.strip()
+    items = [old_lines.get(v, f'"{v}",') for v in values]
+    items = [i if re.search(r'"\s*,', i) else re.sub(r'(")(\s*#|$)', r'\1,\2', i, count=1) for i in items]
+    new = f"{key} = []" if not items else f"{key} = [\n" + "".join(f"  {i}\n" for i in items) + "]"
+    if m:
+        body = body[:m.start()] + new + body[m.end():]
+    else:
+        body = body.rstrip("\n") + f"\n{new}\n\n"
+    return text[:sec.start()] + body + text[sec.end():]
+
+
+def set_app_decision(profile, pkg, decision):
+    """decision: auto | keep | disable | uninstall. Edits profiles/<tv>.toml."""
+    prof = load_profile(profile)
+    apps = prof["apps"]
+    lists = {k: [p for p in apps.get(k, []) if p != pkg] for k in ("keep", "disable", "uninstall")}
+    if decision in lists:
+        lists[decision].append(pkg)
+    elif decision != "auto":
+        raise TvError(f"unknown decision {decision}")
+    text = prof["_path"].read_text()
+    for key, values in lists.items():
+        if values != apps.get(key, []) or (key == "uninstall" and decision == "uninstall"):
+            text = set_toml_array(text, "apps", key, values)
+    tomllib.loads(text)  # never write a broken profile
+    prof["_path"].write_text(text)
+
+
+# ---- dashboard
+
+class UiClient:
+    """Best-effort event mirror from CLI runs to the dashboard."""
+    def __init__(self):
+        try:
+            self.token = UI_TOKEN_FILE.read_text().strip()
+        except OSError:
+            self.token = None
+
+    def send(self, event):
+        if not self.token:
+            return
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{UI_PORT}/api/ingest", data=json.dumps(event).encode(),
+                                         headers={"Content-Type": "application/json", "X-Token": self.token})
+            urllib.request.urlopen(req, timeout=0.5).read()
+        except Exception:
+            self.token = None  # dashboard not running; stop trying
+
+
+def ui_running():
+    try:
+        with socket.create_connection(("127.0.0.1", UI_PORT), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def ensure_ui():
+    """Start the dashboard in the background when a workflow starts (TVCTL_NO_UI=1 to skip)."""
+    if os.environ.get("TVCTL_NO_UI") or ui_running():
+        return
+    log = open(STATE_DIR / "ui.log", "a")
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "ui", "--no-open"], stdout=log, stderr=log,
+                     stdin=subprocess.DEVNULL, start_new_session=True, cwd=ROOT)
+    for _ in range(30):
+        if ui_running():
+            break
+        time.sleep(0.1)
+    print(f"dashboard: http://127.0.0.1:{UI_PORT}", file=sys.stderr)
+    if sys.stdout.isatty() and shutil.which("open"):
+        subprocess.Popen(["open", f"http://127.0.0.1:{UI_PORT}"])
+
+
+def ui_call(method, path, body=None, timeout=10):
+    """Call the dashboard API as the agent. Raises TvError if it is not running."""
+    try:
+        token = UI_TOKEN_FILE.read_text().strip()
+    except OSError:
+        raise TvError("dashboard not running (start it: ./tvctl ui)")
+    req = urllib.request.Request(f"http://127.0.0.1:{UI_PORT}{path}", method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json", "X-Token": token})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error")
+        except Exception:
+            msg = str(e)
+        raise TvError(msg)
+    except (urllib.error.URLError, OSError) as e:
+        raise TvError(f"dashboard not reachable: {e}")
+
+
+def desktop_notify(title, text):
+    if os.environ.get("TVCTL_NO_NOTIFY") or not shutil.which("osascript"):
+        return
+    subprocess.Popen(["osascript", "-e", f"display notification {json.dumps(text[:200])} with title {json.dumps(title)}"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def ask_options(args):
+    opts = []
+    for spec in args.option or []:
+        value, _, rest = spec.partition("=")
+        label, _, hint = rest.partition("|")
+        opts.append({"value": value, "label": label or value, "hint": hint})
+    if args.options_json:
+        opts += json.loads(Path(args.options_json).read_text() if args.options_json != "-" else sys.stdin.read())
+    if args.options_from:
+        if not args.tv:
+            raise TvError("--options-from needs --tv")
+        ctx = ctx_for(argparse.Namespace(profile=args.tv))
+        for r in inventory_rows(ctx):
+            if r["class"] == args.options_from and not r["locked"]:
+                opts.append({"value": r["package"], "label": r["note"] or r["package"],
+                             "hint": r["package"] + ("" if r["enabled"] else " (currently off)"),
+                             "checked": r["enabled"]})
+    for o in opts:
+        if args.checked and o["value"] in args.checked:
+            o["checked"] = True
+    return opts
+
+
+def cmd_ask(args):
+    """Ask the owner in the dashboard and wait for the answer (exit 2 = no answer: fall back to chat)."""
+    ensure_ui()
+    body = {"kind": args.kind, "title": args.title, "body": args.body or "", "tv": args.tv,
+            "options": ask_options(args)}
+    if args.kind == "confirm":
+        body["options"] = []
+    item = ui_call("POST", "/api/ask", body)
+    viewers = ui_call("GET", "/api/state", timeout=20).get("viewers", 0)
+    if not viewers and not args.no_open and shutil.which("open"):
+        subprocess.Popen(["open", f"http://127.0.0.1:{UI_PORT}" + (f"/#tv={args.tv}" if args.tv else "")])
+    desktop_notify("TV agent needs your input", args.title)
+    if not args.json:
+        print(f"asked in the dashboard (http://127.0.0.1:{UI_PORT}), waiting up to {args.timeout}s…", file=sys.stderr)
+    deadline = time.time() + args.timeout
+    while True:
+        left = deadline - time.time()
+        if left <= 0:
+            item = ui_call("POST", f"/api/ask/{item['id']}/cancel", {"reason": "timeout"})
+            break
+        item = ui_call("GET", f"/api/ask/{item['id']}?wait={min(25, left):.0f}", timeout=40)
+        if item["status"] != "open":
+            break
+    result = {"id": item["id"], "status": item["status"], "answer": item["answer"]}
+    emit(args, result, lambda: print(json.dumps(result["answer"]) if item["status"] == "answered"
+                                     else f"no answer ({item['status']}) – ask in chat instead"))
+    return EXIT_OK if item["status"] == "answered" else EXIT_USER
+
+
+def cmd_inbox(args):
+    """Owner requests sent from the dashboard. Taking them marks them 'picked up'."""
+    if args.reply:
+        item_id, text = args.reply
+        r = ui_call("POST", f"/api/inbox/{item_id}/reply", {"text": text, "done": args.done})
+        emit(args, r, lambda: print(f"replied to {item_id}"))
+        return EXIT_OK
+    items = ui_call("GET", f"/api/inbox?wait={args.wait}", timeout=args.wait + 15)["items"]
+    def human():
+        if not items:
+            print("inbox empty")
+        for i in items:
+            print(f"[{i['id']}] {i['topic']}{' · ' + i['tv'] if i.get('tv') else ''}: {i['text']}")
+    emit(args, items, human)
+    return EXIT_OK
+
+
+def cmd_notify(args):
+    """Post a note to the dashboard. --level need-chat tells the owner to come to the chat."""
+    ensure_ui()
+    r = ui_call("POST", "/api/notify", {"level": args.level, "title": args.title, "body": args.body or "", "tv": args.tv})
+    if args.level == "need-chat":
+        desktop_notify("TV agent needs you in chat", args.title)
+    emit(args, r, lambda: print(f"noted ({args.level})"))
+    return EXIT_OK
+
+
+def cmd_ui(args):
+    sys.path.insert(0, str(ROOT / "ui"))
+    import server
+    server.serve(sys.modules[__name__], port=args.port, open_browser=not args.no_open)
+    return EXIT_OK
+
+
+# ---- keys
+
+def remote_labels(ctx):
+    return {int(k): v for k, v in merged(ctx.presets, "remote_keys").items()}
+
+
+def capture_keys(dev, seconds, first_only=False):
+    """Yield {"scan": int, "device": name, "time": float} for each key-down within `seconds`."""
+    # -tt: a pty makes getevent line-buffered, so presses arrive as they happen
+    proc = subprocess.Popen([dev.adb_bin, "-s", dev.addr, "shell", "-tt", f"timeout {seconds} getevent -t"],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    names, current = {}, None
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            m = re.match(r"add device \d+: (\S+)", line)
+            if m:
+                current = m.group(1)
+                continue
+            m = re.match(r'name:\s+"(.*)"', line)
+            if m and current:
+                names[current] = m.group(1)
+                continue
+            m = re.match(r"\[\s*([\d.]+)\] (\S+): 0001 ([0-9a-f]{4}) 00000001", line)
+            if m:
+                yield {"scan": int(m.group(3), 16), "device": names.get(m.group(2), m.group(2)),
+                       "time": float(m.group(1))}
+                if first_only:
+                    break
+    finally:
+        proc.kill()
+
+
+def write_keys(prof, keys):
+    """Rewrite only the [keys] section of the profile, keeping everything else (and comments) as is."""
+    path = prof["_path"]
+    text = path.read_text()
+    lines = [f"[keys]"]
+    for scan, k in sorted(keys.items(), key=lambda kv: int(kv[0])):
+        fields = ", ".join(f"{f} = {json.dumps(k[f])}" for f in ("label", "open", "action", "package") if f in k)
+        lines.append(f"{int(scan)} = {{ {fields} }}")
+    block = "\n".join(lines) + "\n"
+    m = re.search(r"^\[keys\]\n(?:(?!^\[).*\n?)*", text, re.M)
+    text = text[:m.start()] + block + text[m.end():] if m else text.rstrip("\n") + "\n\n" + block
+    path.write_text(text)
+
+
+def cmd_keys(args):
+    ctx = ctx_for(args)
+    labels = remote_labels(ctx)
+    keys = {int(k): v for k, v in ctx.prof["keys"].items()}
+
+    if args.keys_cmd == "capture":
+        if not args.json:
+            print(f"Listening for {args.seconds}s – press buttons on the remote now.", file=sys.stderr)
+        presses = []
+        for p in capture_keys(ctx.dev, args.seconds):
+            p["label"] = labels.get(p["scan"], "")
+            p["mapped"] = keys.get(p["scan"])
+            presses.append(p)
+            if not args.json:
+                print(f"  scan {p['scan']:>4}  {p['label'] or '?':<10} {p['device']}"
+                      + (f"  (mapped: {p['mapped']})" if p["mapped"] else ""))
+        if args.json:
+            print(json.dumps(presses, indent=1))
+        return EXIT_OK
+
+    if args.keys_cmd == "learn":
+        while True:
+            print("Press the remote button to remap (20s)…")
+            press = next(capture_keys(ctx.dev, 20, first_only=True), None)
+            if not press:
+                print("no button press seen")
+                return EXIT_USER
+            scan = press["scan"]
+            print(f"  got scan {scan} ({labels.get(scan, 'unknown button')}, {press['device']})")
+            target = input("  Open which app? catalog id or package (blank = skip): ").strip()
+            if target:
+                label = input(f"  Label [{labels.get(scan, '')}]: ").strip() or labels.get(scan, f"key {scan}")
+                keys[scan] = {"label": label, "open": ctx.resolve_pkg(target)}
+                write_keys(ctx.prof, keys)
+            if not confirm("Remap another button?"):
+                break
+        args.keys_cmd = "push"
+        ctx.prof = load_profile(args.profile)
+
+    if args.keys_cmd == "set":
+        entry = {"label": args.label or labels.get(args.scan, f"key {args.scan}")}
+        if args.open:
+            entry["open"] = ctx.resolve_pkg(args.open)
+        elif args.action and args.package:
+            entry["action"], entry["package"] = args.action, ctx.resolve_pkg(args.package)
+        else:
+            raise TvError("use --open PKG, or --action ACTION --package PKG")
+        keys[args.scan] = entry
+        write_keys(ctx.prof, keys)
+        ctx.prof = load_profile(args.profile)
+        print(f"profile: {args.scan} -> {entry}")
+        args.keys_cmd = "push"
+
+    if args.keys_cmd == "rm":
+        keys.pop(args.scan, None)
+        write_keys(ctx.prof, keys)
+        ctx.prof = load_profile(args.profile)
+        args.keys_cmd = "push"
+
+    if args.keys_cmd == "push":
+        app = keymap_app(ctx)
+        if not app or not ctx.installed(app["package"]):
+            raise TvError("Remote Remap is not installed – add remote-remap to [apps].install and run apply")
+        raw = keymap_string(ctx)
+        push_keymap(ctx, raw)
+        emit(args, {"keymap": raw}, lambda: print(f"✓ pushed to TV: {raw or '(empty)'}"))
+    return EXIT_OK
+
+
+# ---- find / init
+
+def local_networks():
+    nets = {"192.168.0.0/24", "192.168.1.0/24"}
+    _, out, _ = run(["ifconfig"], timeout=10) if shutil.which("ifconfig") else (0, "", "")
+    for m in re.finditer(r"inet (\d+\.\d+\.\d+)\.\d+ ", out):
+        if not m.group(1).startswith("127."):
+            nets.add(f"{m.group(1)}.0/24")
+    return sorted(nets)
+
+
+def probe(host, ports, timeout=0.5):
+    open_ = []
+    for port in ports:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                open_.append(port)
+        except OSError:
+            pass
+    return host, open_
+
+
+def cast_name(host):
+    try:
+        with urllib.request.urlopen(f"http://{host}:8008/setup/eureka_info?params=name", timeout=1.5) as r:
+            return json.loads(r.read()).get("name")
+    except Exception:
+        return None
+
+
+def find_tvs(cidrs=None):
+    ports = [5555, 6466, 8008, 8060]
+    nets = cidrs or local_networks()
+    hosts = [str(h) for net in nets for h in ip_network(net, strict=False).hosts()]
+    with ThreadPoolExecutor(max_workers=256) as pool:
+        results = [r for r in pool.map(lambda h: probe(h, ports), hosts) if r[1]]
+    found = []
+    for host, open_ in results:
+        kind = ("Roku – not supported (no ADB)" if 8060 in open_ else
+                "Android/Google TV" if {6466, 8008} & set(open_) else "ADB device")
+        found.append({"host": host, "ports": open_, "kind": kind, "adb_enabled": 5555 in open_,
+                      "name": cast_name(host) if 8008 in open_ else None})
+    return nets, found
+
+
+def cmd_find(args):
+    if not args.json:
+        print(f"Scanning {', '.join(args.cidr or local_networks())}…", file=sys.stderr)
+    _, found = find_tvs(args.cidr)
+    def human():
+        if not found:
+            print("No TVs found. Is the TV on and on a network this computer can reach?")
+        for f in found:
+            print(f"  {f['host']:<16} {f['kind']:<32} {f['name'] or '':<24} "
+                  f"{'ADB on' if f['adb_enabled'] else 'ADB off: enable Developer options > USB debugging'}")
+    emit(args, found, human)
+    return EXIT_OK
+
+
+PROFILE_TEMPLATE = """# {name} – created by `tvctl init` on {date}. Fill in with the owner (see prompts/owner-interview.md).
+
+[tv]
+name = "{name}"
+host = "{host}"
+port = {port}
+serial = "{serial}"    # tvctl refuses to apply this profile to another TV
+model = "{model}"
+presets = {presets}  # core + streaming-apps are always loaded
+
+[apps]
+# Catalog ids from apps.toml to install, e.g. ["projectivy", "smarttube", "kodi"]
+install = []
+# Packages never disabled/uninstalled (e.g. voice search, AirPlay the owner uses)
+keep = []
+# Optional packages the owner does not want (bloat from presets is disabled automatically)
+disable = []
+# "keep-others" leaves other user-installed apps alone; "remove-others" uninstalls them (asks first)
+user_apps = "keep-others"
+
+[home]
+# launcher = "projectivy"      # catalog id, or "stock"
+# screensaver = "aerialviews"  # catalog id with a `dream`
+# animation_scale = 0.5
+
+[keys]
+"""
+
+
+def init_tv(name, host, port=5555, force=False, wait=120):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", name):
+        raise TvError("name: lowercase letters, digits and dashes, e.g. kitchen-sony")
+    path = PROFILES_DIR / f"{name}.toml"
+    if path.exists() and not force:
+        raise TvError(f"{path.name} exists (use --force to overwrite)")
+    dev = Device(host, port)
+    dev.connect(wait=wait)
+    props = dev.props()
+    pkgs = dev.packages()
+    presets = detect_presets(props, pkgs)
+    model = f"{props.get('ro.product.manufacturer')} {props.get('ro.product.model')} ({props.get('ro.product.name')}), " \
+            f"Android {props.get('ro.build.version.release')}"
+    PROFILES_DIR.mkdir(exist_ok=True)
+    path.write_text(PROFILE_TEMPLATE.format(
+        name=name, date=datetime.now().date(), host=host, port=port,
+        serial=props.get("ro.serialno", ""), model=model, presets=json.dumps(presets)))
+    prof = load_profile(name)
+    baseline = state_dir(prof) / "baseline.json"
+    if not baseline.exists():
+        take_snapshot(dev, prof, "baseline.json")
+    ctx = Ctx(prof, dev)
+    counts = {}
+    for pkg in pkgs:
+        cls = ctx.classifier.classify(pkg)[0]
+        if pkgs[pkg]["user"] and cls == "unknown":
+            cls = "user"
+        counts[cls] = counts.get(cls, 0) + 1
+    return {"profile": str(path.relative_to(ROOT)), "name": name, "model": model, "presets": presets,
+            "package_classes": counts, "baseline": str(baseline.relative_to(ROOT))}
+
+
+def cmd_init(args):
+    ensure_ui()
+    data = init_tv(args.name, args.host, args.port, args.force)
+    def human():
+        print(f"✓ {data['model']}")
+        print(f"  presets detected: {', '.join(data['presets']) or 'none – this brand is new, see prompts/classify-packages.md'}")
+        print(f"  packages: " + ", ".join(f"{k} {v}" for k, v in sorted(data['package_classes'].items())))
+        print(f"  wrote {data['profile']}, baseline {data['baseline']}")
+        print(f"\nNext: review `tvctl inventory {args.name} --class unknown` and `--class optional`, "
+              f"fill in the profile with the owner, then `tvctl plan {args.name}`.")
+    emit(args, data, human)
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    ap = argparse.ArgumentParser(prog="tvctl", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def add(name, fn, help_, profile=True):
+        p = sub.add_parser(name, help=help_)
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+        if profile:
+            p.add_argument("profile")
+        p.set_defaults(fn=fn)
+        return p
+
+    p = add("find", cmd_find, "find TVs on the network", profile=False)
+    p.add_argument("--cidr", action="append", help="network to scan, e.g. 192.168.1.0/24 (repeatable)")
+    p = add("init", cmd_init, "connect a new TV and write its profile", profile=False)
+    p.add_argument("name")
+    p.add_argument("--host", required=True)
+    p.add_argument("--port", type=int, default=5555)
+    p.add_argument("--force", action="store_true")
+    p = add("inventory", cmd_inventory, "list packages with their classification")
+    p.add_argument("--class", dest="cls", choices=["core", "bloat", "optional", "unknown", "user"])
+    p.add_argument("--mem", action="store_true", help="include RAM use (slow)")
+    add("plan", cmd_plan, "show what apply would change")
+    p = add("apply", cmd_apply, "make the TV match the profile")
+    p.add_argument("--yes", action="store_true", help="confirm uninstalls without asking")
+    p.add_argument("--no-wait", action="store_true", help="don't wait for manual steps")
+    p.add_argument("--reboot", action="store_true", help="reboot after changes and verify")
+    p.add_argument("--measure", action="store_true", help="measure performance before and after")
+    p = add("restore", cmd_restore, "re-enable disabled packages")
+    p.add_argument("packages", nargs="*")
+    p.add_argument("--all", action="store_true", help="re-enable every disabled package")
+    p.add_argument("--defaults", action="store_true", help="back to the TV's defaults: packages, home, settings")
+    p = add("install", cmd_install, "install one catalog app")
+    p.add_argument("app_id")
+    p.add_argument("--force", action="store_true")
+    p = add("status", cmd_status, "show TV state")
+    p.add_argument("--reboot", action="store_true", help="reboot first and check the TV boots into the profile")
+    add("snapshot", cmd_snapshot, "save the current package state")
+    p = add("ask", cmd_ask, "ask the owner in the dashboard and wait for the answer", profile=False)
+    p.add_argument("--title", required=True)
+    p.add_argument("--body")
+    p.add_argument("--kind", choices=["choice", "multi", "confirm", "text", "action"], default="choice")
+    p.add_argument("--tv", help="profile name the question is about")
+    p.add_argument("--option", action="append", metavar="VALUE=LABEL|HINT")
+    p.add_argument("--options-json", metavar="FILE", help="JSON list of {value,label,hint,checked}; - for stdin")
+    p.add_argument("--options-from", choices=["optional", "bloat", "user"], help="options from the TV's packages")
+    p.add_argument("--checked", action="append", help="option value to pre-check")
+    p.add_argument("--timeout", type=int, default=540, help="seconds to wait (default 540)")
+    p.add_argument("--no-open", action="store_true", help="don't open the browser")
+    p = add("inbox", cmd_inbox, "pick up the owner's requests from the dashboard", profile=False)
+    p.add_argument("--wait", type=int, default=0, help="seconds to wait for a request")
+    p.add_argument("--reply", nargs=2, metavar=("ID", "TEXT"))
+    p.add_argument("--done", action="store_true", help="with --reply: mark the request done")
+    p = add("notify", cmd_notify, "post a note to the dashboard", profile=False)
+    p.add_argument("--title", required=True)
+    p.add_argument("--body")
+    p.add_argument("--level", choices=["info", "warn", "need-chat", "done"], default="info")
+    p.add_argument("--tv")
+    p = add("ui", cmd_ui, "run the dashboard (control center)", profile=False)
+    p.add_argument("--port", type=int, default=UI_PORT)
+    p.add_argument("--no-open", action="store_true", help="don't open the browser")
+
+    p = sub.add_parser("keys", help="remote button remapping")
+    ksub = p.add_subparsers(dest="keys_cmd", required=True)
+    for name, help_ in (("capture", "show scan codes of pressed buttons"), ("learn", "interactive remap"),
+                        ("set", "map a button"), ("rm", "unmap a button"), ("push", "send the mapping to the TV")):
+        kp = ksub.add_parser(name, help=help_)
+        kp.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+        kp.add_argument("profile")
+        kp.set_defaults(fn=cmd_keys)
+        if name == "capture":
+            kp.add_argument("--seconds", type=int, default=20)
+        if name in ("set", "rm"):
+            kp.add_argument("scan", type=int)
+        if name == "set":
+            kp.add_argument("--open", help="catalog id or package to launch")
+            kp.add_argument("--action", help="intent action to send (with --package)")
+            kp.add_argument("--package")
+            kp.add_argument("--label")
+
+    args = ap.parse_args()
+    try:
+        sys.exit(args.fn(args))
+    except TvError as e:
+        if args.json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(f"error: {e}", file=sys.stderr)
+        sys.exit(EXIT_ERR)
+    except KeyboardInterrupt:
+        sys.exit(EXIT_USER)
+
+
+if __name__ == "__main__":
+    main()

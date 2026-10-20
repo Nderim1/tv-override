@@ -1,0 +1,24 @@
+=== scan Tue Oct 20 09:21:04 CEST 2026 ===
+interface=en5 myip=10.165.138.118 gateway=10.165.138.31
+	inet 10.165.138.118 netmask 0xffffff00 broadcast 10.165.138.255
+--- ping sweep 10.165.138.0/24 ---
+--- mDNS (5s) ---
+/Users/nde/projects/tv-override/find_tv.sh: line 21:  6634 Terminated: 15          dns-sd -B $svc local. > /tmp/dnssd_$$.txt 2>&1
+/Users/nde/projects/tv-override/find_tv.sh: line 21:  6641 Terminated: 15          dns-sd -B $svc local. > /tmp/dnssd_$$.txt 2>&1
+/Users/nde/projects/tv-override/find_tv.sh: line 21:  6651 Terminated: 15          dns-sd -B $svc local. > /tmp/dnssd_$$.txt 2>&1
+/Users/nde/projects/tv-override/find_tv.sh: line 21:  6657 Terminated: 15          dns-sd -B $svc local. > /tmp/dnssd_$$.txt 2>&1
+[_airplay._tcp]  9:21:10.103  Add        3   1 local.               _airplay._tcp.       Nderim’s MacBook Pro (2)
+[_airplay._tcp]  9:21:10.103  Add        3  23 local.               _airplay._tcp.       Nderim’s MacBook Pro (2)
+[_airplay._tcp]  9:21:10.103  Add        2  13 local.               _airplay._tcp.       Nderim’s MacBook Pro (2)
+/Users/nde/projects/tv-override/find_tv.sh: line 21:  6665 Terminated: 15          dns-sd -B $svc local. > /tmp/dnssd_$$.txt 2>&1
+--- hosts ---
+HOST 10.165.138.31 mac=30:23:3:e8:28:3c rdns=HackedWifi2-4GH. ports=[ ]
+HOST 10.165.138.139 mac=9c:b6:d0:f0:0:d rdns=nde. ports=[ ]
+--- adb ---
+adb=/Users/nde/Library/Android/sdk/platform-tools/adb
+Android Debug Bridge version 1.0.41
+* daemon not running; starting now at tcp:5037
+* daemon started successfully
+List of devices attached
+
+=== done; saved to /Users/nde/projects/tv-override/scan_result.txt ===

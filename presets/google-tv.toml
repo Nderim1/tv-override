@@ -1,0 +1,39 @@
+# Google TV (launcherx). Verified on TCL G10, Android 12.
+
+[preset]
+name = "google-tv"
+description = "Google TV home (com.google.android.apps.tv.launcherx)"
+
+[match]
+packages_any = ["com.google.android.apps.tv.launcherx"]
+
+# Replacing the stock home: these are disabled together, and only once the new launcher is installed,
+# set as home and (if it needs one) has its accessibility service on. Disabling launcherx alone makes the
+# setup wizard's RecoveryActivity take over the Home intent.
+[launcher]
+stock = ["com.google.android.apps.tv.launcherx", "com.google.android.tungsten.setupwraith"]
+stock_home = "com.google.android.apps.tv.launcherx/.home.HomeActivity"
+
+[live_tv]
+packages = ["com.android.providers.tv", "com.google.android.tv"]  # TV provider + Google Live Channels (if present)
+
+[bloat]
+"com.google.android.feedback" = "Feedback reporter"
+"com.google.android.play.games" = "Play Games"
+"com.android.printspooler" = "Printing"
+"com.android.wallpaper.livepicker" = "Live wallpapers"
+"com.google.android.marvin.talkback" = "Screen reader (move to keep if the owner needs it)"
+
+[optional]
+"com.google.android.katniss" = "Assistant / voice search on the remote's mic button (~110 MB with TTS)"
+"com.google.android.apps.tv.dreamx" = "Google ambient screensaver (~100 MB)"
+"com.google.android.backdrop" = "Backdrop photo screensaver"
+"com.google.android.youtube.tv" = "Stock YouTube (phone casting to TV uses it)"
+"com.google.android.youtube.tvmusic" = "YouTube Music"
+"com.google.android.videos" = "Google TV movies store"
+"com.google.android.apps.mediashell" = "Chromecast built-in (casting from phones)"
+
+[core]
+"com.google.android.tv" = "Live Channels (antenna/cable guide on some models)"
+"com.google.android.apps.tv.launcherx" = "Stock home (handled by [launcher], never disabled directly)"
+"com.google.android.tungsten.setupwraith" = "Setup wizard (handled by [launcher])"

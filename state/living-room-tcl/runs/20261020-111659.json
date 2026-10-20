@@ -1,0 +1,88 @@
+{
+ "id": "20261020-111659",
+ "tv": "living-room-tcl",
+ "mode": "apply",
+ "source": "cli",
+ "started": "2026-10-20T11:16:59+02:00",
+ "finished": "2026-10-20T11:17:03+02:00",
+ "outcome": "ok",
+ "phases": [
+  {
+   "name": "connect",
+   "status": "done",
+   "started": "2026-10-20T11:16:59+02:00",
+   "finished": "2026-10-20T11:16:59+02:00"
+  },
+  {
+   "name": "apply",
+   "status": "done",
+   "started": "2026-10-20T11:16:59+02:00",
+   "finished": "2026-10-20T11:17:00+02:00"
+  },
+  {
+   "name": "verify",
+   "status": "done",
+   "started": "2026-10-20T11:17:00+02:00",
+   "finished": "2026-10-20T11:17:03+02:00"
+  }
+ ],
+ "perf_before": null,
+ "perf_after": null,
+ "rounds": [
+  []
+ ],
+ "summary": {
+  "changed": 0,
+  "disabled": 0,
+  "uninstalled": 0,
+  "installed": 0,
+  "errors": 0,
+  "waiting": []
+ },
+ "status": {
+  "tv": "living-room-tcl",
+  "address": "192.168.1.101:5555",
+  "model": "TCL Smart TV Pro (G10_4K_GB)",
+  "android": "12",
+  "serial": "380260560EC0ED05C",
+  "home": "com.spocky.projengmenu/.ui.home.MainActivity",
+  "on_screen": "org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.playback.PlaybackActivity",
+  "accessibility_services": [
+   {
+    "app": "projectivy",
+    "enabled": true,
+    "running": true
+   },
+   {
+    "app": "remote-remap",
+    "enabled": true,
+    "running": true
+   }
+  ],
+  "screensaver": "com.neilturner.aerialviews/.ui.screensaver.DreamActivity",
+  "animation_scale": "0.5",
+  "mem_available_mb": 591,
+  "disabled_packages": 31,
+  "user_apps": [
+   "com.esaba.downloader",
+   "com.google.android.backdrop",
+   "com.nde.tvremap",
+   "com.neilturner.aerialviews",
+   "com.spocky.projengmenu",
+   "org.smarttube.stable",
+   "org.xbmc.kodi"
+  ],
+  "keymap": "233=action:com.spocky.projengmenu/tv.projectivy.SETTINGS;242=app:org.xbmc.kodi;245=app:org.smarttube.stable",
+  "live_tv": {
+   "tuner_inputs": [
+    "com.tcl.tvinput/.TunerInputService/HW2"
+   ],
+   "external_inputs": 4,
+   "channels": 0,
+   "player": "com.tcl.tv",
+   "player_enabled": true,
+   "protected_disabled": []
+  },
+  "pending_changes": 0
+ }
+}

@@ -1,0 +1,19 @@
+# Preinstalled streaming apps. Never removed by default: the owner decides per app in the profile.
+
+[preset]
+name = "streaming-apps"
+description = "Preinstalled streaming apps (owner choice)"
+always = true
+
+[optional]
+"com.netflix.ninja" = "Netflix"
+"com.netflix.tokenmanager" = "Netflix partner token service"
+"com.amazon.amazonvideo.livingroom" = "Prime Video"
+"com.disney.disneyplus" = "Disney+"
+"com.apple.atve.androidtv.appletv" = "Apple TV"
+"com.spotify.tv.android" = "Spotify"
+"com.wbd.stream" = "Max"
+"tv.pluto.android" = "Pluto TV"
+"tv.twitch.android.app" = "Twitch"
+"com.plexapp.android" = "Plex"
+"tv.wuaki.apptv" = "Rakuten TV"

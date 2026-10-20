@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TV Override Control</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='3' width='14' height='9' rx='1' fill='none' stroke='%233ddc84' stroke-width='1.5'/%3E%3Cpath d='M5 14h6' stroke='%233ddc84' stroke-width='1.5'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script>window.TOKEN = "{{TOKEN}}";</script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">▌</span>TV<span class="dim">-</span>OVERRIDE<span class="cursor">_</span>
+      <span class="brand-sub">// control center</span>
+    </div>
+    <div class="topbar-right">
+      <span id="agent-chip" class="link" title="Is the LLM agent listening? (it checks in while it works)"><span class="dot"></span><span class="lbl">AGENT</span></span>
+      <span id="link" class="link" title="Live connection to the local server"><span class="dot"></span><span class="lbl">LINK</span></span>
+      <span id="clock" class="clock"></span>
+      <button class="btn btn-ghost" data-action="add-tv">+ ADD TV</button>
+    </div>
+  </header>
+  <div class="layout">
+    <aside id="fleet" class="fleet" aria-label="TVs"></aside>
+    <main id="main" class="main"></main>
+  </div>
+  <div id="modal-root"></div>
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+</body>
+</html>

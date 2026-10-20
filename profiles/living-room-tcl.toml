@@ -1,0 +1,52 @@
+# Living room TV. Owner: Nderim.
+# Uses: Kodi a lot, YouTube via SmartTube, voice button, AirPlay + screen mirroring, nice screensavers.
+
+[tv]
+name = "living-room-tcl"
+host = "192.168.1.101"          # behind the modem; reachable from the router side
+port = 5555
+serial = "380260560EC0ED05C"    # tvctl refuses to apply this profile to another TV
+model = "TCL Smart TV Pro (G10_4K_GB), Google TV, Android 12, 1.7 GB RAM"
+presets = ["google-tv", "tcl"]  # core + streaming-apps are always loaded
+
+[apps]
+# Catalog ids from apps.toml, installed if missing.
+install = ["projectivy", "smarttube", "kodi", "aerialviews", "downloader", "remote-remap"]
+
+# Never disabled/uninstalled, even if a preset calls them bloat.
+keep = [
+  "com.google.android.katniss",   # voice button
+  "com.tcl.ttvs",                 # TCL voice service
+  "com.tcl.airplay2",
+  "com.realtek.airplay2",
+  "com.tcl.miracast",
+  "com.google.android.backdrop",
+]
+
+# Optional packages (see presets) the owner does not want. Bloat is disabled automatically unless kept.
+disable = [
+  "com.google.android.apps.tv.dreamx",
+  "com.google.android.youtube.tv",
+  "com.google.android.youtube.tvmusic",
+  "com.google.android.videos",
+  "com.netflix.ninja",
+  "com.amazon.amazonvideo.livingroom",
+  "com.tcl.ui_mediaCenter",
+  "com.tcl.t_solo",
+  "com.netflix.tokenmanager",
+]
+
+# User-installed apps not in `install` or `keep`: "keep-others" (default) or "remove-others" (asks first).
+user_apps = "remove-others"
+
+[home]
+launcher = "projectivy"         # catalog id; "stock" keeps the TV's own home
+screensaver = "aerialviews"     # catalog id with a `dream`
+animation_scale = 0.5
+
+# Remote buttons -> what they open. Scan codes from `tvctl keys capture`.
+# open = package to launch, or action + package for an intent action.
+[keys]
+233 = { label = "Settings", action = "tv.projectivy.SETTINGS", package = "com.spocky.projengmenu" }
+242 = { label = "Netflix", open = "org.xbmc.kodi" }
+245 = { label = "YouTube", open = "org.smarttube.stable" }

@@ -1,0 +1,33 @@
+# Template for a new brand / device type. Copy to presets/<brand>.toml, fill in, mark what was verified.
+# Classification rules: prompts/classify-packages.md
+
+[preset]
+name = "<brand>"
+description = "<Brand> <platform> (e.g. Hisense VIDAA-free Android TV, XGIMI projector)"
+
+[match]
+manufacturer = ["<value of ro.product.manufacturer>"]
+# packages_any = ["<a package only this brand has>"]
+
+[quirks]
+# autostart_appop = "<app-op name>"   # only if the vendor blocks background services (see diagnose.md)
+
+# [launcher]                        # only if this device has its own stock home
+# stock = ["<vendor.home.package>"]
+# stock_home = "<vendor.home.package>/<.HomeActivity>"
+
+[live_tv]
+packages = []                       # tuner input service, TV player, channel provider
+# player = "<package that shows live channels>"
+
+[remote_keys]
+# <scan code> = "<button label>"
+
+[bloat]
+# "<package>" = "<what it is>"
+
+[optional]
+# "<package>" = "<what it is, what stops working without it>"
+
+[core]
+# "<package>" = "<why it must stay>"

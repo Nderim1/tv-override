@@ -1,0 +1,33 @@
+# Classic Android TV home (com.google.android.tvlauncher). UNTESTED – verify on first use and update.
+
+[preset]
+name = "android-tv"
+description = "Classic Android TV home (com.google.android.tvlauncher)"
+
+[match]
+packages_any = ["com.google.android.tvlauncher"]
+
+[launcher]
+stock = ["com.google.android.tvlauncher", "com.google.android.tungsten.setupwraith"]
+stock_home = "com.google.android.tvlauncher/.MainActivity"
+
+[live_tv]
+packages = ["com.android.providers.tv", "com.google.android.tv"]
+
+[bloat]
+"com.google.android.feedback" = "Feedback reporter"
+"com.google.android.play.games" = "Play Games"
+"com.android.printspooler" = "Printing"
+"com.google.android.tvrecommendations" = "Home screen recommendations"
+
+[optional]
+"com.google.android.katniss" = "Assistant / voice search"
+"com.google.android.backdrop" = "Backdrop screensaver"
+"com.google.android.youtube.tv" = "Stock YouTube"
+"com.google.android.youtube.tvmusic" = "YouTube Music"
+"com.google.android.videos" = "Google Play Movies"
+"com.google.android.apps.mediashell" = "Chromecast built-in"
+
+[core]
+"com.google.android.tvlauncher" = "Stock home (handled by [launcher])"
+"com.google.android.tungsten.setupwraith" = "Setup wizard (handled by [launcher])"

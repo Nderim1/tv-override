@@ -1,0 +1,72 @@
+# TCL Google TV (Realtek platform). Verified on TCL Smart TV Pro (G10_4K_GB), Android 12.
+
+[preset]
+name = "tcl"
+description = "TCL Google TV"
+
+[match]
+manufacturer = ["TCL"]
+
+[quirks]
+# TclAppBoot blocks background services of apps that lack this app-op, including accessibility services
+# of freshly sideloaded apps ("forbid bind service ... callee_does't_have_OP_AUTO_START_permission").
+autostart_appop = "APP_AUTO_START"
+
+# Live TV (antenna / cable / satellite). These packages are never disabled; `player` is what owners open
+# to watch channels (pin it in the launcher, or map a remote button to it).
+[live_tv]
+packages = ["com.tcl.tv", "com.tcl.tvinput", "com.android.providers.tv"]
+player = "com.tcl.tv"
+
+# Known remote buttons (BT_RC833 remote). Scan code -> label. Used by `tvctl keys` for nicer output.
+[remote_keys]
+233 = "Settings"
+242 = "Netflix"
+245 = "YouTube"
+
+[bloat]
+"tv.samba.ssm.ui" = "Samba TV – tracks what you watch (ACR)"
+"com.tcl.logkit" = "TCL telemetry"
+"com.tcl.waterfall.overseas" = "TCL recommendations / ads"
+"com.tcl.channelplus" = "TCL Channel"
+"com.tcl.esticker" = "Stickers / promos"
+"com.tcl.exhibit" = "Store demo mode"
+"com.tcl.gamebar" = "Game bar"
+"com.tcl.messagebox" = "TCL messages"
+"com.tcl.interactive" = "TCL interactive"
+"com.tcl.ocean.instructions" = "E-manual"
+"com.tcl.repairguide" = "Repair guide"
+"com.tcl.usercenter" = "TCL account"
+"com.tcl.smartalexa" = "Alexa integration"
+"com.tcl.magiconnectfree" = "MagiConnect phone app link"
+"com.tcl.hearaid" = "Hearing aid feature"
+"com.tcl.tv.tclhome_passive" = "TCL Home promo page"
+"com.tcl.browser" = "TCL browser"
+
+[optional]
+"com.tcl.ttvs" = "TCL voice service (keep if the owner uses the voice button)"
+"com.tcl.airplay2" = "AirPlay receiver (TCL side)"
+"com.realtek.airplay2" = "AirPlay receiver (Realtek daemon)"
+"com.tcl.miracast" = "Screen mirroring (Miracast)"
+"com.tcl.ui_mediaCenter" = "USB media player"
+"com.tcl.t_solo" = "T-Solo: Bluetooth headphones while TV speakers are muted"
+
+[core]
+"com.tcl.tv" = "TV player – also runs HDMI inputs"
+"com.tcl.tvinput" = "TV inputs"
+"com.tcl.systemserver" = "TCL system server"
+"com.tcl.suspension" = "TCL power / floating UI"
+"com.tcl.guard" = "TCL Safety Guard"
+"com.tcl.initsetup" = "Initial setup"
+"com.tcl.partnercustomizer" = "Remote hotkeys, partner config"
+"com.tcl.providers.config" = "TCL config provider"
+"com.tcl.globalkeyoverlay" = "Global key overlay"
+"com.tcl.factory.view" = "Factory menu"
+"com.tcl.autopair" = "Remote pairing"
+"com.tcl.UpdatePeripheral" = "Remote / peripheral firmware"
+"com.tcl.inputmethod.international" = "TCL keyboard"
+"com.tcl.android.webview" = "TCL WebView"
+"com.tcl.useragreement" = "User agreement"
+"com.tcl.dashboard" = "Quick settings panel (picture, sound, inputs)"
+"com.tvos" = "TV OS service"
+"com.realtek.*" = "Realtek platform services"

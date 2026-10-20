@@ -1,0 +1,236 @@
+{
+ "id": "20261020-111623",
+ "tv": "living-room-tcl",
+ "mode": "apply",
+ "source": "ui",
+ "started": "2026-10-20T11:16:23+02:00",
+ "finished": "2026-10-20T11:16:38+02:00",
+ "outcome": "ok",
+ "phases": [
+  {
+   "name": "connect",
+   "status": "done",
+   "started": "2026-10-20T11:16:23+02:00",
+   "finished": "2026-10-20T11:16:23+02:00"
+  },
+  {
+   "name": "measure-before",
+   "status": "done",
+   "started": "2026-10-20T11:16:23+02:00",
+   "finished": "2026-10-20T11:16:30+02:00"
+  },
+  {
+   "name": "apply",
+   "status": "done",
+   "started": "2026-10-20T11:16:30+02:00",
+   "finished": "2026-10-20T11:16:31+02:00"
+  },
+  {
+   "name": "measure-after",
+   "status": "done",
+   "started": "2026-10-20T11:16:31+02:00",
+   "finished": "2026-10-20T11:16:35+02:00"
+  },
+  {
+   "name": "verify",
+   "status": "done",
+   "started": "2026-10-20T11:16:35+02:00",
+   "finished": "2026-10-20T11:16:38+02:00"
+  }
+ ],
+ "perf_before": {
+  "time": "2026-10-20T11:16:30+02:00",
+  "mem_total_mb": 1765,
+  "mem_available_mb": 583,
+  "swap_total_mb": 649,
+  "swap_used_mb": 478,
+  "load1": 26.05,
+  "load5": 26.1,
+  "uptime_s": 5016,
+  "storage_total_gb": 22.4,
+  "storage_free_gb": 17.4,
+  "processes": 125,
+  "top": [
+   {
+    "name": "org.smarttube.stable",
+    "mb": 179
+   },
+   {
+    "name": "system",
+    "mb": 117
+   },
+   {
+    "name": "com.google.android.gms",
+    "mb": 105
+   },
+   {
+    "name": "org.xbmc.kodi",
+    "mb": 84
+   },
+   {
+    "name": "com.android.vending",
+    "mb": 79
+   },
+   {
+    "name": "com.spocky.projengmenu",
+    "mb": 61
+   },
+   {
+    "name": "com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0",
+    "mb": 56
+   },
+   {
+    "name": "com.google.android.katniss:interactor",
+    "mb": 52
+   },
+   {
+    "name": "com.android.vending:background",
+    "mb": 37
+   },
+   {
+    "name": "com.google.android.apps.mediashell",
+    "mb": 32
+   },
+   {
+    "name": "com.android.systemui",
+    "mb": 30
+   },
+   {
+    "name": "com.tcl.ttvs",
+    "mb": 27
+   }
+  ],
+  "packages": {
+   "total": 143,
+   "enabled": 112,
+   "disabled": 31,
+   "user": 7
+  }
+ },
+ "perf_after": {
+  "time": "2026-10-20T11:16:35+02:00",
+  "mem_total_mb": 1765,
+  "mem_available_mb": 597,
+  "swap_total_mb": 649,
+  "swap_used_mb": 478,
+  "load1": 26.75,
+  "load5": 26.24,
+  "uptime_s": 5024,
+  "storage_total_gb": 22.4,
+  "storage_free_gb": 17.4,
+  "processes": 126,
+  "top": [
+   {
+    "name": "org.smarttube.stable",
+    "mb": 179
+   },
+   {
+    "name": "system",
+    "mb": 105
+   },
+   {
+    "name": "com.google.android.gms",
+    "mb": 105
+   },
+   {
+    "name": "org.xbmc.kodi",
+    "mb": 84
+   },
+   {
+    "name": "com.android.vending",
+    "mb": 79
+   },
+   {
+    "name": "com.spocky.projengmenu",
+    "mb": 61
+   },
+   {
+    "name": "com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0",
+    "mb": 56
+   },
+   {
+    "name": "com.google.android.katniss:interactor",
+    "mb": 52
+   },
+   {
+    "name": "com.android.vending:background",
+    "mb": 37
+   },
+   {
+    "name": "com.google.android.apps.mediashell",
+    "mb": 32
+   },
+   {
+    "name": "com.android.systemui",
+    "mb": 30
+   },
+   {
+    "name": "com.tcl.ttvs",
+    "mb": 24
+   }
+  ],
+  "packages": {
+   "total": 143,
+   "enabled": 112,
+   "disabled": 31,
+   "user": 7
+  }
+ },
+ "rounds": [
+  []
+ ],
+ "summary": {
+  "changed": 0,
+  "disabled": 0,
+  "uninstalled": 0,
+  "installed": 0,
+  "errors": 0,
+  "waiting": []
+ },
+ "status": {
+  "tv": "living-room-tcl",
+  "address": "192.168.1.101:5555",
+  "model": "TCL Smart TV Pro (G10_4K_GB)",
+  "android": "12",
+  "serial": "380260560EC0ED05C",
+  "home": "com.spocky.projengmenu/.ui.home.MainActivity",
+  "on_screen": "org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.playback.PlaybackActivity",
+  "accessibility_services": [
+   {
+    "app": "projectivy",
+    "enabled": true,
+    "running": true
+   },
+   {
+    "app": "remote-remap",
+    "enabled": true,
+    "running": true
+   }
+  ],
+  "screensaver": "com.neilturner.aerialviews/.ui.screensaver.DreamActivity",
+  "animation_scale": "0.5",
+  "mem_available_mb": 596,
+  "disabled_packages": 31,
+  "user_apps": [
+   "com.esaba.downloader",
+   "com.google.android.backdrop",
+   "com.nde.tvremap",
+   "com.neilturner.aerialviews",
+   "com.spocky.projengmenu",
+   "org.smarttube.stable",
+   "org.xbmc.kodi"
+  ],
+  "keymap": "233=action:com.spocky.projengmenu/tv.projectivy.SETTINGS;242=app:org.xbmc.kodi;245=app:org.smarttube.stable",
+  "live_tv": {
+   "tuner_inputs": [
+    "com.tcl.tvinput/.TunerInputService/HW2"
+   ],
+   "external_inputs": 4,
+   "channels": 0,
+   "player": "com.tcl.tv",
+   "player_enabled": true,
+   "protected_disabled": []
+  },
+  "pending_changes": 0
+ }
+}

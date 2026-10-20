@@ -1,0 +1,11 @@
+remote-remap/build/
+*.idsig
+__pycache__/
+.DS_Store
+# Timestamped snapshots are local; baseline.json and history.jsonl are kept.
+state/*/snapshot-*.json
+# dashboard runtime files
+state/.ui-token
+state/ui.log
+state/*/perf-latest.json
+state/agent.json
