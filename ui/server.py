@@ -52,7 +52,7 @@ class Bus:
 
 class Job:
     """A workflow running in a background thread, paused on owner input through threading events."""
-    def __init__(self, app, tv_name, mode, reboot, measure):
+    def __init__(self, app, tv_name, mode, reboot, measure, **options):
         self.app, self.tv, self.mode = app, tv_name, mode
         self.run_id = None
         self.state = "starting"
@@ -60,7 +60,7 @@ class Job:
         self._answer = None
         self._event = threading.Event()
         self._stop = False
-        self.wf = app.tv.Workflow(tv_name, mode, self, reboot=reboot, measure=measure, source="ui")
+        self.wf = app.tv.Workflow(tv_name, mode, self, reboot=reboot, measure=measure, source="ui", **options)
 
     # Hooks interface used by the Workflow
     def emit(self, event):
@@ -357,11 +357,11 @@ class App:
         self.save_perf(name, data["perf"])
         return data
 
-    def start_job(self, name, mode, reboot, measure):
+    def start_job(self, name, mode, reboot, measure, **options):
         with self.lock:
             if name in self.jobs:
                 raise self.tv.TvError(f"a {self.jobs[name].mode} run is already active on {name}")
-            job = Job(self, name, mode, reboot, measure)
+            job = Job(self, name, mode, reboot, measure, **options)
             self.jobs[name] = job
         job.start()
         return job.public()
@@ -542,6 +542,11 @@ def make_handler(app):
                 if name and sub == "/apps":
                     ctx = app.ctx(name)
                     return {"rows": tv.inventory_rows(ctx, mem=query.get("mem") == ["1"], with_plan=True)}
+                rp = re.fullmatch(r"/runs/([0-9]{8}-[0-9]{6})/revert-plan", sub or "")
+                if name and rp:
+                    ctx = app.ctx(name)
+                    acts = tv.revert_plan(ctx, tv.load_run(name, rp.group(1)))
+                    return {"actions": tv.public(acts)}
                 rm = re.fullmatch(r"/runs/([0-9]{8}-[0-9]{6})", sub or "")
                 if name and rm:
                     run_path = tv.STATE_DIR / name / "runs" / f"{rm.group(1)}.json"
@@ -588,9 +593,13 @@ def make_handler(app):
                     return data
                 if name and sub == "/run":
                     mode = body.get("mode", "apply")
-                    if mode not in ("apply", "plan", "verify", "restore"):
+                    if mode not in ("apply", "plan", "verify", "restore", "revert"):
                         raise tv.TvError("bad mode")
-                    return app.start_job(name, mode, bool(body.get("reboot")), body.get("measure", True))
+                    options = {}
+                    if mode == "revert":
+                        tv.load_run(name, str(body.get("run_id", "")))  # validates the id
+                        options = {"revert_run": body["run_id"], "keep_reverted": bool(body.get("keep"))}
+                    return app.start_job(name, mode, bool(body.get("reboot")), body.get("measure", True), **options)
                 if name and sub == "/keys/capture":
                     return app.capture(name, max(5, min(int(body.get("seconds", 20)), 60)))
                 km = re.fullmatch(r"/keys/(\d{1,4})(?:/(delete|try))?", sub or "")

@@ -7,6 +7,7 @@
   tvctl plan PROFILE                      what apply would change
   tvctl apply PROFILE [--yes]             make the TV match the profile (safe to re-run)
   tvctl restore PROFILE [PKG...|--all]    re-enable disabled packages, restore stock home
+  tvctl revert PROFILE RUN_ID [--keep]    undo what one run changed
   tvctl install PROFILE APP_ID [--force]  install one catalog app
   tvctl keys capture|learn|set|rm|push PROFILE ...
   tvctl status PROFILE [--reboot]
@@ -387,8 +388,10 @@ def list_runs(name):
 
 # ---------------------------------------------------------------- planning
 
-def action(step, target, what, detail="", status="todo", fn=None):
-    return {"step": step, "target": target, "action": what, "detail": detail, "status": status, "fn": fn}
+def action(step, target, what, detail="", status="todo", fn=None, undo=None):
+    """One planned change. `undo` records how to reverse it exactly (used by `tvctl revert`)."""
+    return {"step": step, "target": target, "action": what, "detail": detail, "status": status, "fn": fn,
+            "undo": undo}
 
 
 class Ctx:
@@ -467,11 +470,11 @@ def plan_install(ctx):
         if ctx.installed(pkg):
             if not ctx.enabled(pkg):
                 acts.append(action("install", pkg, "enable", app["name"],
-                                   fn=lambda p=pkg: pm(ctx, "enable", p)))
+                                   fn=lambda p=pkg: pm(ctx, "enable", p), undo={"op": "disable", "pkg": pkg}))
             continue
         if app["source"] == "apk":
             acts.append(action("install", pkg, "install", f"{app['name']} from {app['file']}",
-                               fn=install_apk_fn(ctx, app)))
+                               fn=install_apk_fn(ctx, app), undo={"op": "uninstall", "pkg": pkg}))
         elif app["source"] == "play" and not ctx.installed("com.android.vending"):
             acts.append(action("install", pkg, "install", f"no Play Store on this device: add a verified APK for "
                                f"{app['name']} to apps.toml (prompts/verify-apk.md)", status="blocked"))
@@ -493,9 +496,13 @@ def plan_autostart(ctx):
         app = ctx.app(app_id)
         pkg = app["package"]
         if app.get("autostart") and ctx.installed(pkg):
-            if "allow" not in ctx.dev.sh(f"appops get {pkg} {op}"):
+            current = ctx.dev.sh(f"appops get {pkg} {op}")
+            if "allow" not in current:
+                prev = re.search(rf"{op}: (\w+)", current)
                 acts.append(action("autostart", pkg, "allow", f"vendor autostart app-op {op}",
-                                   fn=lambda p=pkg: ctx.dev.sh(f"appops set {p} {op} allow")))
+                                   fn=lambda p=pkg: ctx.dev.sh(f"appops set {p} {op} allow"),
+                                   undo={"op": "appop", "pkg": pkg, "name": op,
+                                         "value": prev.group(1) if prev else "default"}))
     return acts
 
 
@@ -552,7 +559,8 @@ def plan_keymap(ctx):
     _, current = ctx.dev.broadcast(REMAP_RECEIVER, "com.nde.tvremap.GET_KEYMAP")
     if current == raw:
         return []
-    return [action("keys", app["package"], "push", raw, fn=lambda: push_keymap(ctx, raw))]
+    return [action("keys", app["package"], "push", raw, fn=lambda: push_keymap(ctx, raw),
+                   undo={"op": "keymap", "value": current})]
 
 
 def pm(ctx, verb, pkg):
@@ -581,7 +589,8 @@ def plan_packages(ctx):
         on = ctx.enabled(pkg)
         if pkg in keep:
             if not on:
-                acts.append(action("packages", pkg, "enable", "listed in keep", fn=lambda p=pkg: pm(ctx, "enable", p)))
+                acts.append(action("packages", pkg, "enable", "listed in keep", fn=lambda p=pkg: pm(ctx, "enable", p),
+                                   undo={"op": "disable", "pkg": pkg}))
             continue
         if pkg in wanted_off:
             if cls == "core":
@@ -590,9 +599,10 @@ def plan_packages(ctx):
                 acts.append(action("packages", pkg, "disable", "refused: in [apps].install", status="error"))
             elif on:
                 acts.append(action("packages", pkg, "disable", note or "listed in disable",
-                                   fn=lambda p=pkg: pm(ctx, "disable", p)))
+                                   fn=lambda p=pkg: pm(ctx, "disable", p), undo={"op": "enable", "pkg": pkg}))
         elif cls == "bloat" and on and pkg not in protected:
-            acts.append(action("packages", pkg, "disable", note, fn=lambda p=pkg: pm(ctx, "disable", p)))
+            acts.append(action("packages", pkg, "disable", note, fn=lambda p=pkg: pm(ctx, "disable", p),
+                               undo={"op": "enable", "pkg": pkg}))
     for pkg in sorted(wanted_off - set(ctx.pkgs)):
         acts.append(action("packages", pkg, "disable", "not installed on this TV", status="skipped"))
     return acts
@@ -613,17 +623,20 @@ def plan_user_apps(ctx):
     replaced = {old for i in ctx.install_ids() for old in ctx.app(i).get("replaces", [])}
     for pkg in sorted(replaced & set(ctx.pkgs)):
         acts.append(action("user-apps", pkg, "uninstall", "replaced by a newer catalog app (owner signs in again)",
-                           status="confirm", fn=uninstall_fn(ctx, pkg)))
+                           status="confirm", fn=uninstall_fn(ctx, pkg),
+                           undo={"op": "reinstall", "pkg": pkg}))
     for pkg in sorted(set(apps.get("uninstall", [])) - replaced):
         if pkg in ctx.pkgs and pkg not in wanted:
             acts.append(action("user-apps", pkg, "uninstall", "listed in [apps].uninstall (deletes its data)",
-                               status="confirm", fn=uninstall_fn(ctx, pkg)))
+                               status="confirm", fn=uninstall_fn(ctx, pkg),
+                           undo={"op": "reinstall", "pkg": pkg}))
     if apps.get("user_apps", "keep-others") == "remove-others":
         keep = set(apps.get("keep", [])) | wanted | replaced | set(apps.get("uninstall", []))
         for pkg, info in ctx.pkgs.items():
             if info["user"] and pkg not in keep:
                 acts.append(action("user-apps", pkg, "uninstall", "user app not in install/keep (deletes its data)",
-                                   status="confirm", fn=uninstall_fn(ctx, pkg)))
+                                   status="confirm", fn=uninstall_fn(ctx, pkg),
+                           undo={"op": "reinstall", "pkg": pkg}))
     return acts
 
 
@@ -660,7 +673,9 @@ def plan_launcher(ctx):
             ctx.dev.sh(f"cmd package set-home-activity --user 0 {home}")
             if ctx.dev.home() != home:
                 raise TvError(f"home resolves to {ctx.dev.home()} instead of {home}")
-        acts.append(action("home", pkg, "replace-stock", f"set {app['name']} as home, disable {', '.join(stock)}", fn=fn))
+        acts.append(action("home", pkg, "replace-stock", f"set {app['name']} as home, disable {', '.join(stock)}", fn=fn,
+                           undo={"op": "launcher", "enable": [p for p in stock if ctx.enabled(p)],
+                                 "home": ctx.dev.home()}))
     return acts
 
 
@@ -678,7 +693,9 @@ def plan_screensaver(ctx):
         return []
     def fn():
         ctx.dev.sh(f"settings put secure screensaver_components {comp}; settings put secure screensaver_enabled 1")
-    return [action("screensaver", comp, "set", app["name"], fn=fn)]
+    prev = {k: ctx.dev.setting("secure", k) for k in ("screensaver_components", "screensaver_enabled")}
+    return [action("screensaver", comp, "set", app["name"], fn=fn,
+                   undo={"op": "settings", "ns": "secure", "values": prev})]
 
 
 def plan_animations(ctx):
@@ -690,7 +707,8 @@ def plan_animations(ctx):
     if all(v is not None and f"{float(v):g}" == want for v in current.values()):
         return []
     return [action("animations", "global", "set", f"{want}x",
-                   fn=lambda: ctx.dev.sh("; ".join(f"settings put global {k} {want}" for k in ANIMATION_KEYS)))]
+                   fn=lambda: ctx.dev.sh("; ".join(f"settings put global {k} {want}" for k in ANIMATION_KEYS)),
+                   undo={"op": "settings", "ns": "global", "values": current})]
 
 
 PLANNERS = [plan_baseline, plan_install, plan_autostart, plan_a11y, plan_keymap,
@@ -771,8 +789,10 @@ class Workflow:
 
     mode: "apply" | "plan" | "verify" (reboot + measure) | "restore" (back to the TV's defaults)
     """
-    def __init__(self, profile, mode="apply", hooks=None, yes=False, reboot=False, measure=True, source="cli"):
+    def __init__(self, profile, mode="apply", hooks=None, yes=False, reboot=False, measure=True, source="cli",
+                 revert_run=None, keep_reverted=False):
         self.profile_name, self.mode, self.hooks = profile, mode, hooks or Hooks()
+        self.revert_run, self.keep_reverted = revert_run, keep_reverted
         self.yes, self.reboot, self.measure, self.source = yes, reboot, measure, source
         self.ctx = None
         self.record = {"id": datetime.now().strftime("%Y%m%d-%H%M%S"), "tv": None, "mode": mode, "source": source,
@@ -813,6 +833,8 @@ class Workflow:
                 self.phase("apply", self._apply)
             elif self.mode == "restore":
                 self.phase("restore", self._restore)
+            elif self.mode == "revert":
+                self.phase("revert", self._revert)
             if self.mode != "plan" and self.record["outcome"] in ("ok", "running") and \
                     (self.mode == "verify" or (self.reboot and self.record["summary"].get("changed"))):
                 self.phase("reboot", self.ctx.dev.reboot_and_wait)
@@ -925,6 +947,24 @@ class Workflow:
         else:
             self.record["outcome"] = "ok"
 
+    def _revert(self):
+        source = load_run(self.record["tv"], self.revert_run)
+        self.record["reverts"] = self.revert_run
+        acts = revert_plan(self.ctx, source)
+        self._round(acts)
+        kept = []
+        if self.keep_reverted:  # so the next apply does not disable them again
+            for a in acts:
+                if a["status"] == "done" and a["action"] == "enable":
+                    set_app_decision(self.record["tv"], a["target"], "keep")
+                    kept.append(a["target"])
+        self.record["summary"] = {
+            "changed": sum(1 for a in acts if a["status"] == "done"),
+            "errors": sum(1 for a in acts if a["status"] == "error"),
+            "reinstall": [a["target"] for a in acts if a["action"] == "reinstall"],
+            "kept": kept, "reverts": self.revert_run}
+        self.record["outcome"] = "error" if self.record["summary"]["errors"] else "ok"
+
     def _restore(self):
         acts = restore_defaults_plan(self.ctx)
         self._round(acts)
@@ -943,11 +983,12 @@ def restore_defaults_plan(ctx):
     acts = []
     for pkg in sorted(p for p, i in ctx.pkgs.items() if not i["enabled"]):
         acts.append(action("restore", pkg, "enable", ctx.classifier.classify(pkg)[1],
-                           fn=lambda p=pkg: pm(ctx, "enable", p)))
+                           fn=lambda p=pkg: pm(ctx, "enable", p), undo={"op": "disable", "pkg": pkg}))
     stock, stock_home = stock_launcher(ctx.presets)
     if stock_home and ctx.dev.home() != stock_home:
         acts.append(action("restore", stock_home, "set-home", "stock home",
-                           fn=lambda: ctx.dev.sh(f"cmd package set-home-activity --user 0 {stock_home}")))
+                           fn=lambda: ctx.dev.sh(f"cmd package set-home-activity --user 0 {stock_home}"),
+                           undo={"op": "home", "value": ctx.dev.home()}))
     baseline = state_dir(ctx.prof) / "baseline.json"
     settings = json.loads(baseline.read_text()).get("settings", {}) if baseline.exists() else {}
     defaults = {"screensaver_components": settings.get("screensaver_components"),
@@ -957,8 +998,94 @@ def restore_defaults_plan(ctx):
         if value and current.get(key) != value:
             ns = "secure" if key.startswith("screensaver") else "global"
             acts.append(action("restore", key, "set", value,
-                               fn=lambda ns=ns, k=key, v=value: ctx.dev.sh(f"settings put {ns} {k} {shlex.quote(v)}")))
+                               fn=lambda ns=ns, k=key, v=value: ctx.dev.sh(f"settings put {ns} {k} {shlex.quote(v)}"),
+                               undo={"op": "settings", "ns": ns, "values": {key: current.get(key)}}))
     return acts
+
+
+def legacy_undo(ctx, a):
+    """Best-effort inverse for actions recorded before runs stored their own undo."""
+    stock, stock_home = stock_launcher(ctx.presets)
+    what, target = a["action"], a["target"]
+    if what == "disable":
+        return {"op": "enable", "pkg": target}
+    if what == "enable":
+        return {"op": "disable", "pkg": target}
+    if what == "uninstall":
+        return {"op": "reinstall", "pkg": target}
+    if what == "install":
+        return {"op": "uninstall", "pkg": target}
+    if what == "replace-stock":
+        return {"op": "launcher", "enable": stock, "home": stock_home}
+    if what == "allow":
+        return {"op": "appop", "pkg": target, "name": ctx.quirks.get("autostart_appop", "APP_AUTO_START"),
+                "value": "default"}
+    return None  # settings/keymap: previous values were not recorded
+
+
+def revert_plan(ctx, record):
+    """Actions that undo everything a run changed, newest first. Uninstalled apps come back as manual steps."""
+    acts, seen = [], set()
+    done = [a for r in record.get("rounds", []) for a in r if a.get("status") == "done"]
+    live, _ = live_tv(ctx.presets)
+    for a in reversed(done):
+        u = a.get("undo") or legacy_undo(ctx, a)
+        if not u:
+            acts.append(action("revert", a["target"], a["action"], "previous value was not recorded", status="skipped"))
+            continue
+        key = (u["op"], u.get("pkg") or u.get("ns") or a["target"])
+        if key in seen:
+            continue
+        seen.add(key)
+        op, pkg = u["op"], u.get("pkg")
+        if op == "enable" and ctx.installed(pkg) and not ctx.enabled(pkg):
+            acts.append(action("revert", pkg, "enable", f"undo: {a['action']} ({a['detail']})"[:200],
+                               fn=lambda p=pkg: pm(ctx, "enable", p)))
+        elif op == "disable" and ctx.installed(pkg) and ctx.enabled(pkg) and pkg not in live:
+            acts.append(action("revert", pkg, "disable", f"undo: {a['action']}", fn=lambda p=pkg: pm(ctx, "disable", p)))
+        elif op == "uninstall" and ctx.installed(pkg):
+            acts.append(action("revert", pkg, "uninstall", f"undo: installed by that run", status="confirm",
+                               fn=uninstall_fn(ctx, pkg)))
+        elif op == "reinstall" and not ctx.installed(pkg):
+            acts.append(action("revert", pkg, "reinstall", "uninstalled by that run: reinstall it from the Play Store",
+                               status="manual"))
+        elif op == "appop":
+            acts.append(action("revert", pkg, "appop", f"{u['name']} → {u['value']}",
+                               fn=lambda p=pkg, n=u["name"], v=u["value"]: ctx.dev.sh(f"appops set {p} {n} {v}")))
+        elif op == "keymap":
+            app = keymap_app(ctx)
+            if app and ctx.installed(app["package"]):
+                acts.append(action("revert", app["package"], "push", f"previous key map: {u['value'] or '(empty)'}",
+                                   fn=lambda v=u["value"] or "": push_keymap(ctx, v)))
+        elif op == "launcher":
+            def fn(u=u):
+                for p in u.get("enable", []):
+                    if ctx.installed(p) and not ctx.enabled(p):
+                        pm(ctx, "enable", p)
+                if u.get("home"):
+                    ctx.dev.sh(f"cmd package set-home-activity --user 0 {u['home']}")
+            acts.append(action("revert", u.get("home") or "home", "restore-home",
+                               f"re-enable {', '.join(u.get('enable', []))}; home → {u.get('home')}", fn=fn))
+        elif op == "home" and u.get("value"):
+            acts.append(action("revert", u["value"], "set-home", "previous home",
+                               fn=lambda v=u["value"]: ctx.dev.sh(f"cmd package set-home-activity --user 0 {v}")))
+        elif op == "settings":
+            def fn(u=u):
+                for k, v in u["values"].items():
+                    ctx.dev.sh(f"settings delete {u['ns']} {k}" if v is None else
+                               f"settings put {u['ns']} {k} {shlex.quote(str(v))}")
+            acts.append(action("revert", u["ns"], "settings", ", ".join(f"{k}={v}" for k, v in u["values"].items()),
+                               fn=fn))
+    return acts
+
+
+def load_run(name, run_id):
+    if not re.fullmatch(r"\d{8}-\d{6}", run_id):
+        raise TvError("bad run id")
+    path = STATE_DIR / name / "runs" / f"{run_id}.json"
+    if not path.exists():
+        raise TvError(f"no run {run_id} for {name}")
+    return json.loads(path.read_text())
 
 
 def restore_gone(ctx):
@@ -1066,6 +1193,20 @@ def cmd_restore(args):
     print("Note: restored packages may be disabled again by the next `tvctl apply` unless the profile changes.",
           file=sys.stderr)
     return EXIT_OK
+
+
+def cmd_revert(args):
+    ensure_ui()
+    rec = Workflow(args.profile, "revert", CliHooks(args), yes=args.yes, measure=args.measure,
+                   revert_run=args.run, keep_reverted=args.keep).run()
+    if rec["outcome"] == "error" and rec.get("error"):
+        raise TvError(rec["error"])
+    emit(args, {"outcome": rec["outcome"], "summary": rec["summary"]}, lambda: (
+        print(f"✓ reverted run {args.run}: {rec['summary'].get('changed', 0)} change(s)"),
+        rec["summary"].get("reinstall") and print("Reinstall from the Play Store: " + ", ".join(rec["summary"]["reinstall"])),
+        not args.keep and print("Note: the next `tvctl apply` re-applies the profile (use --keep to add re-enabled "
+                                "packages to [apps].keep).", file=sys.stderr)))
+    return EXIT_ERR if rec["outcome"] == "error" else EXIT_OK
 
 
 def cmd_install(args):
@@ -1742,6 +1883,11 @@ def main():
     p.add_argument("packages", nargs="*")
     p.add_argument("--all", action="store_true", help="re-enable every disabled package")
     p.add_argument("--defaults", action="store_true", help="back to the TV's defaults: packages, home, settings")
+    p = add("revert", cmd_revert, "undo what one run changed")
+    p.add_argument("run", help="run id from state/<tv>/runs (e.g. 20261020-111623)")
+    p.add_argument("--keep", action="store_true", help="add re-enabled packages to [apps].keep")
+    p.add_argument("--yes", action="store_true", help="confirm uninstalls of apps that run installed")
+    p.add_argument("--measure", action="store_true")
     p = add("install", cmd_install, "install one catalog app")
     p.add_argument("app_id")
     p.add_argument("--force", action="store_true")

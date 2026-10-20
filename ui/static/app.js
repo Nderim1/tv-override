@@ -56,6 +56,10 @@ const STATUS = {
   skipped: ['–', 'skipped'], waiting: ['⚠', 'waiting on you'], stopped: ['■', 'stopped'], pending: ['○', 'pending'],
   'needs-confirm': ['?', 'needs ok'],
 };
+function explainBtn(question) {
+  return `<button class="explain" data-action="explain" data-q="${esc(question)}" title="Ask the agent to explain this" aria-label="Explain this">?</button>`;
+}
+
 function st(status) {
   const [icon, label] = STATUS[status] || ['·', status];
   const cls = status === 'ok' ? 'done' : status === 'needs-confirm' ? 'confirm' : status === 'stopped' ? 'skipped' : status;
@@ -407,7 +411,7 @@ function renderAlert() {
     const fromCli = !job && L && L.source === 'cli';
     el.innerHTML = `<div class="alert" role="alert">
       <div class="alert-title">⚠ ACTION REQUIRED · ON THE TV</div>
-      <ol>${waiting.map((a) => `<li>${esc(a.detail)}<br><span class="pkg">${esc(a.step)} · ${esc(a.target)} · ${a.status === 'blocked' ? 'blocked until the step above is done' : 'needs you'}</span></li>`).join('')}</ol>
+      <ol>${waiting.map((a) => `<li>${esc(a.detail)} ${explainBtn(`I'm asked to do this on ${S.selected}: "${a.detail}" (${a.step} · ${a.target}). Why is it needed and how exactly do I do it?`)}<br><span class="pkg">${esc(a.step)} · ${esc(a.target)} · ${a.status === 'blocked' ? 'blocked until the step above is done' : 'needs you'}</span></li>`).join('')}</ol>
       ${fromCli ? '<p class="hint">This run was started from the terminal: answer there (press Enter to re-check).</p>' : `
       <div class="row">
         <button class="btn btn-warn" data-action="continue">✓ I DID IT · RE-CHECK</button>
@@ -556,8 +560,9 @@ const PHASES = {
   plan: ['connect', 'plan', 'verify'],
   verify: ['connect', 'measure-before', 'reboot', 'measure-after', 'verify'],
   restore: ['connect', 'measure-before', 'restore', 'measure-after', 'verify'],
+  revert: ['connect', 'measure-before', 'revert', 'measure-after', 'verify'],
 };
-const PHASE_LABEL = { connect: 'connect', 'measure-before': 'measure ▸ before', apply: 'apply', plan: 'plan', reboot: 'reboot', 'measure-after': 'measure ▸ after', verify: 'verify', restore: 'restore' };
+const PHASE_LABEL = { connect: 'connect', 'measure-before': 'measure ▸ before', apply: 'apply', plan: 'plan', reboot: 'reboot', 'measure-after': 'measure ▸ after', verify: 'verify', restore: 'restore', revert: 'revert' };
 
 function pipelineSource() {
   if (S.viewRun) {
@@ -586,9 +591,9 @@ function renderPipeline() {
   const steps = order.map((name, i) => {
     let p = src.phases[name];
     let status = p ? p.status : (src.state === 'running' ? 'pending' : 'skipped');
-    if (status === 'running' && waitingNow && (name === 'apply' || name === 'restore')) status = 'waiting';
+    if (status === 'running' && waitingNow && ['apply', 'restore', 'revert'].includes(name)) status = 'waiting';
     return `<div class="step ${status}"><div class="n">${String(i + 1).padStart(2, '0')}</div><div class="t">${esc(PHASE_LABEL[name] || name)}</div>
-      <div class="s">${st(status)}</div>${p?.detail ? `<div class="hint">${esc(p.detail)}</div>` : ''}</div>`;
+      <div class="s">${st(status)}${status === 'error' ? ' ' + explainBtn(`The "${name}" phase of a ${src.mode} run on ${S.selected} failed: ${p?.detail || 'no detail'}. What went wrong and what should I do?`) : ''}</div>${p?.detail ? `<div class="hint">${esc(p.detail)}</div>` : ''}</div>`;
   }).join('');
   const rounds = (src.rounds || []).filter(Boolean);
   const body = rounds.length ? rounds.map((acts, n) => {
@@ -598,7 +603,7 @@ function renderPipeline() {
     return `<div><div class="round-head"><span>${src.mode === 'plan' ? 'PLAN' : `ROUND ${n + 1}`} · ${acts.length} ACTION(S)</span>
       <span>${Object.entries(counts).map(([k, v]) => `${v} ${STATUS[k]?.[1] || k}`).join(' · ')}</span></div>
       ${shown.length ? `<div class="table-wrap" style="max-height:340px"><table class="t"><thead><tr><th>status</th><th>step</th><th>action</th><th>target</th><th>detail</th></tr></thead><tbody>
-      ${shown.map((a) => `<tr><td>${st(a.status)}</td><td>${esc(a.step)}</td><td>${esc(a.action)}</td><td class="pkg-name">${esc(a.target)}</td><td class="pkg-note">${esc(a.detail)}</td></tr>`).join('')}
+      ${shown.map((a) => `<tr><td>${st(a.status)}</td><td>${esc(a.step)}</td><td>${esc(a.action)}</td><td class="pkg-name">${esc(a.target)}</td><td class="pkg-note">${esc(a.detail)} ${explainBtn(`Explain this workflow step on ${S.selected}: [${a.status}] ${a.step} · ${a.action} · ${a.target} · ${a.detail}. Why does it happen, and do I need to do anything?`)}</td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">✓ nothing to change: the TV matches the profile</div>'}</div>`;
   }).join('') : '<div class="empty">Waiting for the plan…</div>';
   el.innerHTML = head + `<div class="stepper">${steps}</div><div class="rounds">${body}</div>`;
@@ -613,7 +618,7 @@ function renderConsole() {
   const lines = L ? L.log : [];
   const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
   el.innerHTML = lines.length
-    ? lines.map((l) => `<div class="ln lv-${l.level}"><span class="ts">${esc(time(l.t))}</span>${esc(l.text)}</div>`).join('')
+    ? lines.map((l) => `<div class="ln lv-${l.level}"><span class="ts">${esc(time(l.t))}</span>${esc(l.text)}${l.level === 'error' || l.level === 'warn' ? ' ' + explainBtn(`Explain this ${l.level === 'error' ? 'error' : 'warning'} from ${S.selected}: ${l.text}`) : ''}</div>`).join('')
     : '<div class="ln lv-dim">$ waiting for events… (runs from the dashboard or the terminal stream here)</div>';
   if (stick) el.scrollTop = el.scrollHeight;
 }
@@ -667,7 +672,7 @@ function renderApps() {
     <div class="table-wrap"><table class="t"><thead><tr><th>state</th><th>package</th><th>class</th>${S.appsMem ? '<th>RAM</th>' : ''}<th>decision</th><th>next run</th></tr></thead><tbody>
     ${rows.map((r) => `<tr>
       <td class="${r.enabled ? 'state-on' : 'state-off'}">${r.enabled ? '● on' : '○ off'}</td>
-      <td><div class="pkg-name">${esc(r.package)}</div>${r.note ? `<div class="pkg-note">${esc(r.note)}</div>` : ''}</td>
+      <td><div class="pkg-name">${esc(r.package)} ${explainBtn(`Explain the package ${r.package} on ${S.selected}: class ${r.class}, currently ${r.enabled ? 'on' : 'off'}, decision ${r.decision}${r.locked ? ' (locked: ' + r.locked + ')' : ''}, note "${r.note || ''}", next run: ${r.effect || 'no change'}. What is it, and should I keep or disable it?`)}</div>${r.note ? `<div class="pkg-note">${esc(r.note)}</div>` : ''}</td>
       <td><span class="cls cls-${esc(r.class)}">${esc(r.class)}</span></td>
       ${S.appsMem ? `<td class="mono">${r.pss_mb ? r.pss_mb + ' MB' : ''}</td>` : ''}
       <td>${decisionCell(r)}</td>
@@ -683,14 +688,16 @@ function renderHistory() {
   if (!el) return;
   const runs = S.detail.runs;
   el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[06]</b>run history</h2><span class="hint">${runs.length} run(s) · click to inspect</span></div>
-    ${runs.length ? `<div class="table-wrap" style="max-height:320px"><table class="t"><thead><tr><th>when</th><th>mode</th><th>from</th><th>outcome</th><th>changes</th><th>RAM before → after</th></tr></thead><tbody>
+    ${runs.length ? `<div class="table-wrap" style="max-height:320px"><table class="t"><thead><tr><th>when</th><th>mode</th><th>from</th><th>outcome</th><th>changes</th><th>RAM before → after</th><th></th></tr></thead><tbody>
     ${runs.map((r) => {
       const d = r.mem_before != null && r.mem_after != null ? r.mem_after - r.mem_before : null;
       return `<tr class="clickable" data-action="view-run" data-run="${esc(r.id)}" tabindex="0">
         <td>${esc(date(r.started))}</td><td>${esc(r.mode)}</td><td>${esc(r.source === 'cli' ? 'terminal' : r.source || '')}</td>
-        <td>${st(r.outcome)}</td>
+        <td>${st(r.outcome)}${r.outcome === 'error' ? ' ' + explainBtn(`Run ${r.id} (${r.mode}) on ${S.selected} ended with an error. What went wrong and what should I do?`) : ''}</td>
         <td class="mono">${r.summary?.changed ?? '–'}${r.summary?.disabled ? ` · ${r.summary.disabled} disabled` : ''}${r.summary?.uninstalled ? ` · ${r.summary.uninstalled} removed` : ''}</td>
-        <td class="mono">${fmtMB(r.mem_before)} → ${fmtMB(r.mem_after)} MB ${d != null ? `<span class="${d >= 0 ? 'delta-up' : 'delta-down'}">(${d >= 0 ? '▲ +' : '▼ '}${d})</span>` : ''}${r.note ? `<div class="pkg-note">${esc(r.note)}</div>` : ''}</td></tr>`;
+        <td class="mono">${fmtMB(r.mem_before)} → ${fmtMB(r.mem_after)} MB ${d != null ? `<span class="${d >= 0 ? 'delta-up' : 'delta-down'}">(${d >= 0 ? '▲ +' : '▼ '}${d})</span>` : ''}${r.note ? `<div class="pkg-note">${esc(r.note)}</div>` : ''}</td>
+        <td style="text-align:right">${r.summary?.changed > 0 && r.source !== 'manual' && ['apply', 'restore', 'revert'].includes(r.mode)
+          ? `<button class="btn btn-sm" data-action="revert" data-run="${esc(r.id)}" ${busyState().running || !onlineOf(S.selected) ? 'disabled' : ''}>⟲ REVERT</button>` : ''}</td></tr>`;
     }).join('')}</tbody></table></div>` : '<div class="empty">No runs yet.</div>'}`;
 }
 
@@ -885,6 +892,24 @@ function modal(html) {
 }
 const closeModal = () => ($('#modal-root').innerHTML = '');
 
+async function revertModal(runId) {
+  modal(`<h2>⟲ Revert run ${esc(runId)}?</h2><p><span class="spin">◌</span> working out what that run changed…</p>`);
+  let plan;
+  try { plan = await api(`/api/tv/${S.selected}/runs/${runId}/revert-plan`); }
+  catch (e) { modal(`<h2>⟲ Revert run ${esc(runId)}</h2><p class="st st-error">✖ ${esc(e.message)}</p><div class="row" style="justify-content:flex-end"><button class="btn" data-action="modal-close">CLOSE</button></div>`); return; }
+  const acts = plan.actions.filter((a) => a.status !== 'skipped');
+  const skipped = plan.actions.filter((a) => a.status === 'skipped');
+  modal(`<h2>⟲ Revert run ${esc(runId)}</h2>
+    <p>This undoes what that run changed on ${esc(S.selected)}, newest change first. Apps it uninstalled have to be reinstalled from the Play Store (listed below).</p>
+    ${acts.length ? `<div class="table-wrap" style="max-height:300px"><table class="t"><thead><tr><th></th><th>undo</th><th>target</th><th>detail</th></tr></thead><tbody>
+      ${acts.map((a) => `<tr><td>${st(a.status === 'todo' ? 'todo' : a.status)}</td><td>${esc(a.action)}</td><td class="pkg-name">${esc(a.target)}</td><td class="pkg-note">${esc(a.detail)}</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">Nothing left to undo: the TV already looks like it did before that run.</div>'}
+    ${skipped.length ? `<p class="hint">${skipped.length} change(s) can't be reverted exactly (their previous value wasn't recorded in older runs).</p>` : ''}
+    <label class="check" style="margin-top:10px"><input type="checkbox" id="revert-keep" checked> also mark re-enabled apps as <b>keep</b> in the profile, so the next RUN WORKFLOW doesn't disable them again</label>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" data-action="modal-close">CANCEL</button>
+    <button class="btn btn-warn" data-action="revert-go" data-run="${esc(runId)}" ${acts.length ? '' : 'disabled'}>⟲ REVERT</button></div>`);
+}
+
 function restoreModal() {
   modal(`<h2>⟲ Restore ${esc(S.selected)} to defaults?</h2>
     <p>Every disabled package comes back, the stock home screen returns, and screensaver/animations go back to how they were.
@@ -951,6 +976,18 @@ document.addEventListener('click', async (e) => {
       renderLive(); $('#sec-pipeline').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } else if (a === 'back-live') { S.viewRun = null; renderLive(); }
     else if (a === 'restore') restoreModal();
+    else if (a === 'revert') revertModal(t.dataset.run);
+    else if (a === 'revert-go') {
+      const keep = $('#revert-keep').checked;
+      closeModal();
+      await post(`/api/tv/${S.selected}/run`, { mode: 'revert', run_id: t.dataset.run, keep, measure: true });
+      S.viewRun = null; toast(`reverting run ${t.dataset.run}…`); await loadState(); renderLive();
+      $('#sec-pipeline').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (a === 'explain') {
+      await post('/api/inbox', { tv: S.selected, topic: 'explain', text: t.dataset.q });
+      const online = S.agent.seen && Date.now() - new Date(S.agent.seen) < 90000;
+      toast(online ? 'asked the agent: the answer appears in the agent panel' : 'queued: the agent answers when it next checks in (or ask in the chat)');
+    }
     else if (a === 'restore-go') {
       if ($('#confirm-name').value.trim() !== S.selected) { toast('name does not match', true); return; }
       closeModal(); startRun('restore');

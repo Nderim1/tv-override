@@ -66,7 +66,8 @@ Or in Claude Code: "set up the TV at 192.168.1.50" and the `tv-setup` skill take
 ```bash
 ./tvctl plan living-room-tcl                    # what would change ("nothing to do" = in sync)
 ./tvctl apply living-room-tcl                   # re-apply, e.g. after a TCL update
-./tvctl restore living-room-tcl com.netflix.ninja   # undo one package (or --all)
+./tvctl restore living-room-tcl com.netflix.ninja   # undo one package (or --all / --defaults)
+./tvctl revert living-room-tcl 20261020-111623 --keep  # undo everything one run changed
 ./tvctl install living-room-tcl smarttube --force   # (re)install a catalog app
 ./tvctl keys set living-room-tcl 245 --open kodi --label YouTube
 ./tvctl --json status living-room-tcl            # machine-readable state

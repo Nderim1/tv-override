@@ -312,3 +312,10 @@ textarea.ta { width: 100%; min-height: 80px; background: var(--surface-2); borde
 .feed-item .meta { color: var(--muted); font-size: 10px; letter-spacing: .08em; }
 .topic-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .fleet-badge { color: var(--cyan); font-size: 10px; letter-spacing: .1em; }
+
+.explain {
+  display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; padding: 0; margin-left: 4px;
+  border: 1px solid #1e4a54; background: transparent; color: var(--cyan); font-size: 10px; font-weight: 700; cursor: pointer;
+  vertical-align: 1px; line-height: 1;
+}
+.explain:hover { border-color: var(--cyan); background: #46c8e01a; box-shadow: 0 0 8px #46c8e033; }

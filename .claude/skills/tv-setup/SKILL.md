@@ -14,7 +14,8 @@ when you parse output. tvctl exit code 2 means the owner has to do something on 
    to keep http://127.0.0.1:8787 open: questions, steps on the TV and progress will appear there.
 2. Collect answers with `./tvctl --json ask …` (see prompts/agent-system.md, "Dashboard first"). Exit 2 → ask
    in chat instead.
-3. Between steps and before you finish: `./tvctl --json inbox` for requests the owner sent from the dashboard.
+3. Between steps and before you finish: `./tvctl --json inbox` for requests the owner sent from the dashboard
+   (including `explain` questions from the "?" buttons). On "stay on standby", loop `inbox --wait 540`.
 4. Escalate with `./tvctl notify --level need-chat --title "<why>"` and continue in chat.
 
 ## New TV
@@ -41,7 +42,8 @@ when you parse output. tvctl exit code 2 means the owner has to do something on 
 - After a vendor update or a factory reset → `./tvctl apply <name>` re-applies everything (factory reset: redo
   developer options/ADB first; the serial stays the same).
 - App update → `prompts/verify-apk.md`, then `./tvctl install <name> <app> --force`.
-- Something broke → `prompts/diagnose.md`; quick undo with `./tvctl restore <name> <pkg>`.
+- Something broke → `prompts/diagnose.md`; undo one package with `./tvctl restore <name> <pkg>`, or a whole run with
+  `./tvctl revert <name> <run-id> --keep` (dashboard: ⟲ REVERT in run history).
 
 ## Keep the repo learning
 

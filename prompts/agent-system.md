@@ -62,8 +62,17 @@ no answer (timeout, owner chose "answer in chat instead", or no dashboard): **th
 chat**. Never loop the same question in the dashboard.
 
 **Check the inbox** between steps and before finishing: `./tvctl --json inbox` returns requests the owner sent
-from the dashboard (topics: classify, remote, apps, broken, message). Act on them like chat requests, and close
-the loop with `./tvctl inbox --reply <id> "what you did" --done`.
+from the dashboard (topics: classify, remote, apps, broken, explain, message). Act on them like chat requests,
+and close the loop with `./tvctl inbox --reply <id> "what you did" --done`.
+
+`explain` requests come from the "?" buttons next to apps, workflow steps, errors and waiting steps; the text
+carries the context. Look things up if needed (presets, `dumpsys package`, logs, prompts/diagnose.md), then reply
+in plain words: what it is, why it happened, and what the owner should do (or "nothing"). 2–5 sentences, end with
+a recommendation. Do not change anything on the TV for an explain request.
+
+**Stay available** when the owner says they will work in the dashboard ("I'll use the control center", "stay on
+standby"): loop `./tvctl --json inbox --wait 540` and handle each request, until they say stop or nothing has
+come in for about 30 minutes. The AGENT chip in the dashboard shows them you are listening.
 
 **Post progress notes** for anything the owner should see without being asked:
 `./tvctl notify --tv <tv> --title "Debloat done: +190 MB free" --level done` (levels: info, warn, done).
