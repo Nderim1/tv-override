@@ -5,7 +5,9 @@ description: Set up, debloat, update or troubleshoot an Android / Google TV with
 
 # TV setup
 
-Read `prompts/agent-system.md` first: it holds the rules. Run everything from the repo root and use `--json`
+Read `prompts/agent-system.md` first: it holds the rules. Delegate screenshots, research and log reading to
+the project subagents `tv-screen`, `tv-research` and `tv-diagnose` (same model, low effort, read-only); you
+keep the decisions and every change to the TV. Run everything from the repo root and use `--json`
 when you parse output. tvctl exit code 2 means the owner has to do something on the TV.
 
 ## Dashboard first

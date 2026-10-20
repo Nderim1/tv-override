@@ -15,6 +15,10 @@ screen on. Your job: turn generic steps into exact, model-specific ones.
 
 ## Research
 
+Delegate: send `tv-research` one question per topic (system update, channel scan, motion smoothing, CEC,
+network standby, tracking opt-outs, anything model-specific), in parallel and in the background, then merge
+the answers into one guide yourself. Use `tv-screen` to confirm menu names on the real TV.
+
 1. Identify the exact model and platform: product name (e.g. `G10_4K_GB`), marketing name, Google TV vs Android
    TV vs plain Android, firmware generation.
 2. Sources, in this order: the vendor's support page / e-manual for this model, the vendor's official forum,

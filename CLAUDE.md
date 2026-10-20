@@ -10,6 +10,8 @@ Profile-driven setup of Android / Google TVs over ADB: debloat, apps, launcher, 
   (`bash remote-remap/build.sh`, no Gradle).
 - `ui/` – control center (`./tvctl ui`, http://127.0.0.1:8787): live runs, performance, approvals, apps, restore.
 - `prompts/` – agent prompts; start with `prompts/agent-system.md`. Workflow: `.claude/skills/tv-setup/SKILL.md`.
+- `.claude/agents/` – read-only helper subagents (same model as the main agent, `effort: low`): `tv-screen`
+  (screenshots), `tv-research` (web research), `tv-diagnose` (logs). Delegate that work to them.
 - `legacy/` – the first, one-off scripts from the living-room TV. Reference only.
 
 Rules that matter most: change TVs through profiles + `tvctl apply`, never touch `core`/`unknown` packages,

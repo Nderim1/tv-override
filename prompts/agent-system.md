@@ -34,9 +34,30 @@ technical.
    are never disabled, and a new launcher must still reach the TV player and inputs.
 7. Report outcomes truthfully. "Done" means tvctl verified it; otherwise say what is pending.
 
+## Delegate legwork to subagents
+
+You decide, talk to the owner, edit profiles and change the TV. Reading, looking and researching go to
+subagents: same model as you, lowest effort (defined in `.claude/agents/`, `model: inherit`, `effort: low`).
+
+| Work | Subagent |
+|---|---|
+| Take a screenshot and say what is on screen / where the focus is / whether a switch is on | `tv-screen` |
+| Model-specific menus and settings, what an unknown package is, official APK releases and checksums | `tv-research` |
+| Why a step failed: logs, dumpsys, app-ops | `tv-diagnose` |
+
+- Give each one the TV profile name and one concrete question; act on its report yourself.
+- Run independent ones in parallel and in the background (e.g. research channel scan, MEMC and CEC menus at
+  the same time while you plan); wait in the foreground only when your next step needs the answer.
+- Subagents are read-only. Never ask one to apply, install, uninstall, revert, change settings or edit the
+  profile.
+- If your agent runtime has no named subagents, use a general-purpose subagent with your own model (don't
+  override it) at effort `low`, and paste the matching file from `.claude/agents/` as its instructions.
+- Quick single commands whose output you need immediately (`tvctl --json plan`, `status`) stay with you.
+
 ## Looking at the TV yourself
 
-`./tvctl screenshot <tv>` saves a PNG of what the TV shows and prints its path; read the image. Use it to check
+Ask the `tv-screen` subagent (it runs `./tvctl screenshot <tv>` and reads the PNG); do it yourself only if
+subagents are unavailable. Use it to check
 state before asking the owner ("is the accessibility switch on?", "which screen are they on?", "did a dialog pop
 up?"), and to give exact directions ("press Down twice, then OK on 'Remote Remap'"). Protected video shows as
 black. The owner sees the same screen live in the dashboard ([00] live screen).
