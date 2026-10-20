@@ -6,6 +6,9 @@ sends an intent when a mapped button is pressed and swallows that press. The map
 
 ## Flow
 
+The owner can do all of this themselves in the dashboard (section "remote buttons": LEARN A BUTTON → press it
+→ pick the app → SAVE & PUSH). Point them there first; use the CLI flow below when you drive it yourself.
+
 1. Make sure `remote-remap` is in `[apps].install` and `./tvctl apply <tv>` has run (installs it, grants the
    vendor autostart app-op, asks the owner to switch on its accessibility service).
 2. Ask which buttons the owner wants changed and what each should open.

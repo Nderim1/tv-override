@@ -11,6 +11,7 @@ const S = {
   apps: null, appsLoading: false, appsError: null, appsFilter: 'all', appsQuery: '', appsMem: false,
   live: {}, measuring: false, opts: { reboot: true },
   agent: { items: [], seen: null },
+  keys: null, keysError: null, capture: { state: null, presses: [], until: 0 },
 };
 
 /* ------------------------------------------------------------------ api */
@@ -82,8 +83,22 @@ function handleAgentEvent(ev) {
   renderAgentChip(); renderAgent(); scheduleFleet();
 }
 
+function handleKeyEvent(ev) {
+  if (ev.tv !== S.selected) return;
+  const C = S.capture;
+  if (ev.type === 'keycapture') {
+    C.state = ev.state;
+    if (ev.state === 'listening') { C.presses = []; C.until = Date.now() + ev.seconds * 1000; }
+  } else {
+    const p = C.presses.find((x) => x.scan === ev.scan);
+    if (p) p.count++; else C.presses.push({ ...ev, count: 1 });
+  }
+  renderKeys();
+}
+
 function handleEvent(ev) {
   if (ev && ev.type === 'agent') return handleAgentEvent(ev);
+  if (ev && (ev.type === 'keypress' || ev.type === 'keycapture')) return handleKeyEvent(ev);
   if (!ev || !ev.tv) return;
   const L = live(ev.tv);
   switch (ev.type) {
@@ -172,7 +187,7 @@ function connectEvents() {
   es.addEventListener('replayed', () => { replaying = false; renderFleet(); if (S.selected) renderLive(); });
   es.onmessage = (m) => {
     const ev = JSON.parse(m.data);
-    if (replaying && ev.type === 'agent') return;  // the agent desk is loaded from /api/agent instead
+    if (replaying && ['agent', 'keypress', 'keycapture'].includes(ev.type)) return;  // loaded via the API instead
     if (replaying) {
       // rebuild quietly; render once at the end of the replay
       const sel = S.selected; S.selected = null; handleEvent(ev); S.selected = sel;
@@ -219,10 +234,23 @@ async function loadApps(mem = S.appsMem) {
   renderApps();
 }
 
+async function loadKeys() {
+  if (!S.selected) return;
+  if (!onlineOf(S.selected)) { S.keys = null; S.keysError = 'TV offline'; renderKeys(); return; }
+  S.keysError = null;
+  try {
+    const name = S.selected;
+    const d = await api(`/api/tv/${name}/keys`);
+    if (name === S.selected) S.keys = d;
+  } catch (e) { S.keysError = e.message; }
+  renderKeys();
+}
+
 const onlineOf = (name) => S.tvs.find((t) => t.name === name)?.online;
 
 async function selectTv(name) {
-  S.selected = name; S.viewRun = null; S.apps = null; S.appsError = null;
+  S.selected = name; S.viewRun = null; S.apps = null; S.appsError = null; S.keys = null;
+  S.capture = { state: null, presses: [], until: 0 };
   location.hash = `tv=${name}`;
   renderFleet();
   $('#main').innerHTML = `<div class="panel"><span class="spin">◌</span> loading ${esc(name)}…</div>`;
@@ -232,6 +260,7 @@ async function selectTv(name) {
   renderMain();
   renderAgent();
   loadApps();
+  loadKeys();
 }
 
 /* ------------------------------------------------------------------ fleet */
@@ -287,8 +316,9 @@ function renderMain() {
     <section id="sec-alert"></section>
     <section class="panel" id="sec-perf"></section>
     <section class="panel" id="sec-pipeline"></section>
+    <section class="panel" id="sec-keys"></section>
     <section class="panel" id="sec-console">
-      <div class="panel-head"><h2 class="panel-title"><b>[04]</b>console</h2><span class="hint">live workflow log</span></div>
+      <div class="panel-head"><h2 class="panel-title"><b>[05]</b>console</h2><span class="hint">live workflow log</span></div>
       <div class="console" id="console" aria-live="polite"></div>
     </section>
     <section class="panel" id="sec-apps"></section>
@@ -296,6 +326,7 @@ function renderMain() {
     <section class="panel danger" id="sec-danger"></section>`;
   renderLive();
   renderApps();
+  renderKeys();
   renderHistory();
   renderDanger();
 }
@@ -651,7 +682,7 @@ function renderHistory() {
   const el = $('#sec-history');
   if (!el) return;
   const runs = S.detail.runs;
-  el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[05]</b>run history</h2><span class="hint">${runs.length} run(s) · click to inspect</span></div>
+  el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[06]</b>run history</h2><span class="hint">${runs.length} run(s) · click to inspect</span></div>
     ${runs.length ? `<div class="table-wrap" style="max-height:320px"><table class="t"><thead><tr><th>when</th><th>mode</th><th>from</th><th>outcome</th><th>changes</th><th>RAM before → after</th></tr></thead><tbody>
     ${runs.map((r) => {
       const d = r.mem_before != null && r.mem_after != null ? r.mem_after - r.mem_before : null;
@@ -668,7 +699,7 @@ function renderDanger() {
   if (!el) return;
   const restore = S.detail.runs.find((r) => r.mode === 'restore');
   const reinstall = restore?.summary?.reinstall || [];
-  el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[06]</b>danger zone</h2></div>
+  el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[07]</b>danger zone</h2></div>
     <div class="row" style="justify-content:space-between;align-items:flex-start">
       <div style="max-width:620px">
         <div style="font-weight:700">Restore this TV to its defaults</div>
@@ -680,6 +711,72 @@ function renderDanger() {
     ${reinstall.length ? `<div style="margin-top:14px"><div class="hint">Uninstalled since the baseline (from the last restore):</div>
       <div class="table-wrap" style="max-height:220px;margin-top:6px"><table class="t"><tbody>${reinstall.map((p) => `<tr><td class="pkg-name">${esc(p)}</td>
       <td style="text-align:right"><button class="btn btn-sm" data-action="open-play" data-pkg="${esc(p)}">OPEN IN PLAY STORE ON TV</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+}
+
+/* ------------------------------------------------------------------ remote buttons */
+
+const targetValue = (k) => (k.action ? `action:${k.package}/${k.action}` : `app:${k.open || k.package}`);
+function targetFromValue(v) {
+  if (v.startsWith('action:')) { const [pkg, ...act] = v.slice(7).split('/'); return { package: pkg, action: act.join('/') }; }
+  return { open: v.slice(4) };
+}
+
+function renderKeys() {
+  const el = $('#sec-keys');
+  if (!el) return;
+  const K = S.keys, C = S.capture;
+  const listening = C.state === 'listening';
+  const head = `<div class="panel-head"><h2 class="panel-title"><b>[04]</b>remote buttons</h2>
+    <span class="row"><button class="btn btn-sm btn-cyan" data-action="keys-learn" ${listening || !K ? 'disabled' : ''}>${listening ? '<span class="spin">◌</span> LISTENING' : '+ LEARN A BUTTON'}</button>
+    <button class="btn btn-sm" data-action="keys-reload">↻</button></span></div>`;
+  if (S.keysError && !K) { el.innerHTML = head + `<div class="empty">${esc(S.keysError)}</div>`; return; }
+  if (!K) { el.innerHTML = head + '<div class="empty"><span class="spin">◌</span> reading buttons and apps from the TV…</div>'; return; }
+  const r = K.remap;
+  const profileKm = K.keys.map((k) => `${k.scan}=${k.action ? `action:${k.package}/${k.action}` : `app:${k.open}`}`).join(';');
+  let status;
+  if (!r.in_profile) status = `<div class="alert" style="animation:none;padding:10px 14px"><b class="st st-manual">⚠ Remote Remap is not in this TV's profile.</b> Mappings are saved but do nothing until <code>remote-remap</code> is added to <code>[apps].install</code> and the workflow runs.</div>`;
+  else if (!r.installed) status = `<div class="alert" style="animation:none;padding:10px 14px"><b class="st st-manual">⚠ Remote Remap is not installed yet.</b> RUN WORKFLOW installs it; mappings saved here are pushed then.</div>`;
+  else if (!r.enabled || !r.running) status = `<div class="alert" style="animation:none;padding:10px 14px"><b class="st st-manual">⚠ Remote Remap is ${r.enabled ? 'on but not running' : 'switched off'}.</b> On the TV: Settings → System → Accessibility → Remote Remap → ${r.enabled ? 'Off, then On' : 'On'}.</div>`;
+  else status = `<div class="hint">${st('done')} Remote Remap is running · ${r.keymap === profileKm ? 'TV matches the profile' : '<span class="st st-manual">⚠ TV mapping differs from the profile: saving any button pushes it</span>'}</div>`;
+  const capture = listening || C.presses.length ? `<div class="agent-card" style="margin:12px 0">
+      <div class="who">${listening ? `◉ LISTENING · ${Math.max(0, Math.ceil((C.until - Date.now()) / 1000))}s` : '◎ CAPTURE FINISHED'}</div>
+      <div class="body">${listening ? 'Press the button you want to remap on the remote. Press an arrow key first if the remote was asleep.' : 'Pick a button below, or listen again.'}</div>
+      ${C.presses.length ? `<table class="t"><thead><tr><th>button</th><th>code</th><th>presses</th><th></th></tr></thead><tbody>
+        ${C.presses.map((p) => `<tr><td>${esc(p.label || 'unknown button')}</td><td class="mono">${p.scan}</td><td class="mono">${p.count}</td><td style="text-align:right">
+        ${p.protected ? '<span class="lock">🔒 needed for navigation</span>'
+          : `<button class="btn btn-sm btn-cyan" data-action="key-map" data-scan="${p.scan}" data-label="${esc(p.label)}">${p.mapped ? 'CHANGE MAPPING' : 'MAP THIS BUTTON'}</button>`}</td></tr>`).join('')}
+      </tbody></table>` : '<div class="empty">no presses yet…</div>'}</div>` : '';
+  el.innerHTML = head + status + capture + (K.keys.length ? `
+    <div class="table-wrap" style="margin-top:10px"><table class="t"><thead><tr><th>button</th><th>code</th><th>opens</th><th></th></tr></thead><tbody>
+    ${K.keys.map((k) => `<tr><td><b>${esc(k.label || K.remote_labels[k.scan] || 'button')}</b></td><td class="mono">${k.scan}</td>
+      <td><div class="pkg-name">${esc(k.target_label)}</div><div class="pkg-note">${esc(k.action ? `${k.package} · ${k.action}` : k.open)}${k.missing ? ' · <span class="st st-error">✖ not on this TV</span>' : ''}</div></td>
+      <td style="text-align:right;white-space:nowrap"><button class="btn btn-sm" data-action="key-try" data-scan="${k.scan}">▶ TRY</button>
+      <button class="btn btn-sm" data-action="key-edit" data-scan="${k.scan}">CHANGE</button>
+      <button class="btn btn-sm btn-danger" data-action="key-remove" data-scan="${k.scan}">REMOVE</button></td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">No buttons remapped yet. Click + LEARN A BUTTON and press one on the remote.</div>')
+    + '<div class="hint" style="margin-top:8px">Saving writes the [keys] table of the profile and pushes it to the TV straight away. TRY opens the target on the TV now.</div>';
+}
+
+function keyEditor(scan, label) {
+  const K = S.keys;
+  const cur = K.keys.find((k) => k.scan === +scan);
+  const value = cur ? targetValue(cur) : '';
+  const apps = K.targets.filter((t) => t.type === 'app'), acts = K.targets.filter((t) => t.type === 'action');
+  const opt = (t) => { const v = t.type === 'action' ? `action:${t.package}/${t.action}` : `app:${t.package}`;
+    return `<option value="${esc(v)}" ${v === value ? 'selected' : ''}>${esc(t.label)}${t.type === 'app' && t.label !== t.package ? ` (${esc(t.package)})` : ''}</option>`; };
+  modal(`<h2>⌨ Button ${esc(scan)}${label ? ` · ${esc(label)}` : ''}</h2>
+    <p>Choose what this button opens. The original function of the button (e.g. Netflix) is replaced.</p>
+    <div class="field"><label for="key-label">name shown in the dashboard</label><input id="key-label" value="${esc(cur?.label || label || '')}" placeholder="e.g. Netflix"></div>
+    <div class="field"><label for="key-target">opens</label><select id="key-target" class="decision" style="padding:8px">
+      ${value ? '' : '<option value="" selected disabled>choose an app…</option>'}
+      <optgroup label="Apps on this TV">${apps.map(opt).join('')}</optgroup>
+      ${acts.length ? `<optgroup label="Actions">${acts.map(opt).join('')}</optgroup>` : ''}
+    </select></div>
+    <input type="hidden" id="key-scan" value="${esc(scan)}">
+    <div class="row" style="justify-content:space-between;margin-top:14px">
+      <button class="btn" data-action="key-try-modal">▶ TRY ON TV</button>
+      <span class="row"><button class="btn" data-action="modal-close">CANCEL</button><button class="btn btn-primary" data-action="key-save">SAVE &amp; PUSH</button></span>
+    </div>`);
 }
 
 /* ------------------------------------------------------------------ agent desk */
@@ -897,6 +994,30 @@ document.addEventListener('click', async (e) => {
       $('#inbox-text').value = ''; S.topic = null; renderAgent();
       toast('sent: the agent picks it up when it next checks in');
     } else if (a === 'note-dismiss') await post(`/api/agent/${t.dataset.id}/dismiss`);
+    else if (a === 'keys-reload') { S.keys = null; renderKeys(); loadKeys(); }
+    else if (a === 'keys-learn') {
+      await post(`/api/tv/${S.selected}/keys/capture`, { seconds: 20 });
+      clearInterval(S.capture.timer);
+      S.capture.timer = setInterval(() => { if (S.capture.state !== 'listening') clearInterval(S.capture.timer); renderKeys(); }, 1000);
+    } else if (a === 'key-map') keyEditor(t.dataset.scan, t.dataset.label);
+    else if (a === 'key-edit') keyEditor(t.dataset.scan, '');
+    else if (a === 'key-remove') {
+      if (!confirm(`Remove the mapping for button ${t.dataset.scan}? It goes back to its original function.`)) return;
+      await post(`/api/tv/${S.selected}/keys/${t.dataset.scan}/delete`);
+      toast('mapping removed'); loadKeys(); loadDetail(S.selected).then(renderHead);
+    } else if (a === 'key-try') {
+      const k = S.keys.keys.find((x) => x.scan === +t.dataset.scan);
+      await post(`/api/tv/${S.selected}/keys/${k.scan}/try`, k.action ? { action: k.action, package: k.package } : { open: k.open });
+      toast('opened on the TV');
+    } else if (a === 'key-try-modal' || a === 'key-save') {
+      const v = $('#key-target').value;
+      if (!v) { toast('choose an app first', true); return; }
+      const scan = $('#key-scan').value, target = targetFromValue(v);
+      if (a === 'key-try-modal') { await post(`/api/tv/${S.selected}/keys/${scan}/try`, target); toast('opened on the TV'); return; }
+      const r = await post(`/api/tv/${S.selected}/keys/${scan}`, { label: $('#key-label').value.trim(), ...target });
+      closeModal(); toast(r.pushed ? 'saved and pushed to the TV: press the button to test' : r.note);
+      S.capture.presses = []; loadKeys(); loadDetail(S.selected).then(renderHead);
+    }
   } catch (err) { toast(err.message, true); }
 });
 

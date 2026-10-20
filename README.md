@@ -33,7 +33,8 @@ in `prompts/`.
 A local web dashboard for the whole workflow: fleet of TVs with online state and run stats, live performance
 (RAM, swap, load, top memory users) before vs after each run, a step-by-step pipeline with every action,
 **action-required** banners when the owner has to do something on the TV or approve uninstalls, the app list
-with keep / disable / uninstall decisions (saved to the profile), run history, and a restore-to-defaults button.
+with keep / disable / uninstall decisions (saved to the profile), a **remote buttons** editor (press a button
+on the remote, pick the app it should open, try it, save & push), run history, and a restore-to-defaults button.
 Runs started from the terminal or by the agent stream into it live.
 
 It is also the agent's channel to the owner: the agent asks structured questions with `tvctl ask` (choices,

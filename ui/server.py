@@ -293,6 +293,7 @@ class App:
         self.bus = Bus()
         self.desk = Desk(tv.STATE_DIR / "agent.json", self.bus)
         self.jobs = {}  # tv name -> Job
+        self.captures = set()  # tv names currently listening for remote buttons
         self.lock = threading.Lock()
 
     # ---- data
@@ -370,6 +371,68 @@ class App:
             if job.run_id == run_id:
                 return job
         raise self.tv.TvError("no active run with that id (finished, or started from the terminal)")
+
+    # ---- remote buttons
+
+    def keys_view(self, name):
+        ctx = self.ctx(name)
+        labels = {int(k): v for k, v in self.tv.merged(ctx.presets, "remote_keys").items()}
+        targets = self.tv.launch_targets(ctx)
+        by_pkg = {t["package"]: t["label"] for t in targets if t["type"] == "app"}
+        by_act = {(t["package"], t["action"]): t["label"] for t in targets if t["type"] == "action"}
+        keys = []
+        for scan, k in sorted(ctx.prof["keys"].items(), key=lambda kv: int(kv[0])):
+            pkg = ctx.resolve_pkg(k.get("open") or k.get("package", ""))
+            target = by_act.get((pkg, k.get("action"))) if k.get("action") else by_pkg.get(pkg)
+            keys.append({"scan": int(scan), "label": k.get("label", ""), "open": k.get("open"),
+                         "action": k.get("action"), "package": k.get("package"),
+                         "target_label": target or pkg, "missing": target is None})
+        return {"keys": keys, "remote_labels": labels, "protected": self.tv.PROTECTED_KEYS,
+                "targets": targets, "remap": self.tv.remap_status(ctx)}
+
+    def capture(self, name, seconds):
+        with self.lock:
+            if name in self.captures:
+                raise self.tv.TvError("already listening for buttons on this TV")
+            self.captures.add(name)
+        ctx = self.ctx(name)
+        labels = {int(k): v for k, v in self.tv.merged(ctx.presets, "remote_keys").items()}
+        mapped = {int(k) for k in ctx.prof["keys"]}
+
+        def target():
+            self.bus.publish({"type": "keycapture", "tv": name, "state": "listening", "seconds": seconds})
+            try:
+                for press in self.tv.capture_keys(ctx.dev, seconds):
+                    scan = press["scan"]
+                    self.bus.publish({"type": "keypress", "tv": name, "scan": scan, "device": press["device"],
+                                      "label": labels.get(scan) or self.tv.PROTECTED_KEYS.get(scan, ""),
+                                      "protected": scan in self.tv.PROTECTED_KEYS, "mapped": scan in mapped})
+            except Exception as e:
+                self.bus.publish({"type": "log", "tv": name, "level": "error", "msg": f"key capture: {e}"})
+            finally:
+                with self.lock:
+                    self.captures.discard(name)
+                self.bus.publish({"type": "keycapture", "tv": name, "state": "done"})
+        threading.Thread(target=target, daemon=True).start()
+        return {"listening": seconds}
+
+    def save_key(self, name, scan, entry):
+        self.tv.set_key(name, scan, entry)
+        pushed, note = False, None
+        try:
+            ctx = self.ctx(name)
+        except self.tv.TvError:
+            ctx, note = None, "saved to the profile; the TV is offline – the next RUN WORKFLOW pushes it"
+        app = ctx and self.tv.keymap_app(ctx)
+        if app and ctx.installed(app["package"]):
+            self.tv.push_keymap(ctx, self.tv.keymap_string(ctx))
+            pushed = True
+        elif ctx:
+            note = "saved to the profile; Remote Remap is not installed yet – RUN WORKFLOW installs it"
+        self.bus.publish({"type": "log", "tv": name, "level": "info",
+                          "msg": f"button {scan} {'unmapped' if entry is None else '→ ' + (entry.get('open') or entry.get('action'))}"
+                                 f"{' (pushed to TV)' if pushed else ''}"})
+        return {"ok": True, "pushed": pushed, "note": note}
 
     def ingest(self, event):
         """Events mirrored from CLI runs: shown live, controlled from the terminal."""
@@ -483,6 +546,8 @@ def make_handler(app):
                 if name and rm:
                     run_path = tv.STATE_DIR / name / "runs" / f"{rm.group(1)}.json"
                     return json.loads(run_path.read_text())
+                if name and sub == "/keys":
+                    return app.keys_view(name)
                 if path == "/api/catalog":
                     return tv.load_catalog()
             if method == "POST":
@@ -526,6 +591,22 @@ def make_handler(app):
                     if mode not in ("apply", "plan", "verify", "restore"):
                         raise tv.TvError("bad mode")
                     return app.start_job(name, mode, bool(body.get("reboot")), body.get("measure", True))
+                if name and sub == "/keys/capture":
+                    return app.capture(name, max(5, min(int(body.get("seconds", 20)), 60)))
+                km = re.fullmatch(r"/keys/(\d{1,4})(?:/(delete|try))?", sub or "")
+                if name and km:
+                    scan = int(km.group(1))
+                    if km.group(2) == "delete":
+                        return app.save_key(name, scan, None)
+                    if km.group(2) == "try":
+                        tv.try_target(app.ctx(name), body)
+                        return {"ok": True}
+                    entry = {"label": str(body.get("label", ""))[:40]}
+                    if body.get("action"):
+                        entry.update(action=body["action"], package=body.get("package", ""))
+                    else:
+                        entry["open"] = body.get("open", "")
+                    return app.save_key(name, scan, entry)
                 if name and sub == "/measure":
                     return app.measure(name)
                 if name and sub == "/apps":

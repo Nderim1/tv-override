@@ -10,6 +10,7 @@
 #   a11y      = accessibility service the app needs (owner switches it on in Settings > Accessibility)
 #   autostart = true -> needs the vendor autostart app-op (TCL) to run its background service
 #   keymap    = true -> receives the [keys] mapping (Remote Remap)
+#   actions   = { "<intent action>" = "label" } -> extra targets for remote buttons
 
 [projectivy]
 name = "Projectivy Launcher"
@@ -18,6 +19,7 @@ source = "play"
 home = "com.spocky.projengmenu/.ui.home.MainActivity"
 a11y = "com.spocky.projengmenu/com.spocky.projengmenu.services.ProjectivyAccessibilityService"
 a11y_label = "Projectivy Launcher"
+actions = { "tv.projectivy.SETTINGS" = "settings sidebar", "tv.projectivy.ALL_APPS" = "all apps" }
 note = "Free; button remapping inside Projectivy needs Premium – use Remote Remap instead."
 
 [smarttube]

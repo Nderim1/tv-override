@@ -1433,6 +1433,75 @@ def write_keys(prof, keys):
     path.write_text(text)
 
 
+# Keys that keep the TV usable: arrows, OK/enter, back, home, volume, mute, power.
+PROTECTED_KEYS = {103: "Up", 108: "Down", 105: "Left", 106: "Right", 28: "Enter", 352: "OK", 353: "OK",
+                  158: "Back", 102: "Home", 172: "Home", 114: "Volume down", 115: "Volume up", 113: "Mute",
+                  116: "Power", 142: "Sleep"}
+
+
+def launch_targets(ctx):
+    """Apps (and catalog intent actions) a remote button can open on this TV."""
+    out = ctx.dev.sh("cmd package query-activities --brief -a android.intent.action.MAIN "
+                     "-c android.intent.category.LEANBACK_LAUNCHER; echo ---; "
+                     "cmd package query-activities --brief -a android.intent.action.MAIN "
+                     "-c android.intent.category.LAUNCHER")
+    pkgs = sorted({l.strip().split("/")[0] for l in out.splitlines() if "/" in l})
+    names = {a["package"]: a["name"] for a in ctx.catalog.values()}
+    targets = []
+    for pkg in pkgs:
+        if ctx.enabled(pkg) and pkg != "com.nde.tvremap":
+            note = ctx.classifier.classify(pkg)[1]
+            targets.append({"type": "app", "package": pkg, "label": names.get(pkg) or note or pkg})
+    for app in ctx.catalog.values():
+        if ctx.enabled(app["package"]):
+            for act, label in app.get("actions", {}).items():
+                targets.append({"type": "action", "package": app["package"], "action": act,
+                                "label": f"{app['name']}: {label}"})
+    return sorted(targets, key=lambda t: (t["type"] != "app", t["label"].lower()))
+
+
+def set_key(profile, scan, entry):
+    """Map (entry dict) or unmap (entry None) a button in the profile, then push to the TV if possible."""
+    scan = int(scan)
+    if scan in PROTECTED_KEYS:
+        raise TvError(f"{PROTECTED_KEYS[scan]} is needed to use the TV and cannot be remapped")
+    prof = load_profile(profile)
+    keys = {int(k): v for k, v in prof["keys"].items()}
+    if entry is None:
+        keys.pop(scan, None)
+    else:
+        if not re.fullmatch(r"[A-Za-z0-9_.]+", entry.get("open") or entry.get("package") or ""):
+            raise TvError("bad package name")
+        if "action" in entry and not re.fullmatch(r"[A-Za-z0-9_.]+", entry["action"]):
+            raise TvError("bad intent action")
+        keys[scan] = {k: v for k, v in entry.items() if k in ("label", "open", "action", "package") and v}
+    write_keys(prof, keys)
+    return keys
+
+
+def remap_status(ctx):
+    app = keymap_app(ctx)
+    if not app:
+        return {"in_profile": False}
+    pkg = app["package"]
+    st = {"in_profile": True, "installed": ctx.installed(pkg), "enabled": app["a11y"] in ctx.dev.a11y_enabled(),
+          "running": ctx.dev.running(pkg), "keymap": None}
+    if st["installed"]:
+        st["keymap"] = ctx.dev.broadcast(REMAP_RECEIVER, "com.nde.tvremap.GET_KEYMAP")[1]
+    return st
+
+
+def try_target(ctx, entry):
+    """Open a key's target on the TV right now, like pressing the button would."""
+    if entry.get("action"):
+        ctx.dev.sh(f"am start -a {shlex.quote(entry['action'])}")
+    else:
+        pkg = ctx.resolve_pkg(entry["open"])
+        out = ctx.dev.sh(f"monkey -p {shlex.quote(pkg)} -c android.intent.category.LEANBACK_LAUNCHER 1 2>&1")
+        if "No activities found" in out:
+            ctx.dev.sh(f"monkey -p {shlex.quote(pkg)} -c android.intent.category.LAUNCHER 1")
+
+
 def cmd_keys(args):
     ctx = ctx_for(args)
     labels = remote_labels(ctx)
@@ -1473,6 +1542,8 @@ def cmd_keys(args):
         ctx.prof = load_profile(args.profile)
 
     if args.keys_cmd == "set":
+        if args.scan in PROTECTED_KEYS:
+            raise TvError(f"{PROTECTED_KEYS[args.scan]} is needed to use the TV and cannot be remapped")
         entry = {"label": args.label or labels.get(args.scan, f"key {args.scan}")}
         if args.open:
             entry["open"] = ctx.resolve_pkg(args.open)
