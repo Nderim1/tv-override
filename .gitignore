@@ -9,3 +9,4 @@ state/.ui-token
 state/ui.log
 state/*/perf-latest.json
 state/agent.json
+state/*/screens/

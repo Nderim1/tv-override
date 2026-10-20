@@ -33,7 +33,6 @@ disable = [
   "com.amazon.amazonvideo.livingroom",
   "com.tcl.ui_mediaCenter",
   "com.tcl.t_solo",
-  "com.netflix.tokenmanager",
 ]
 
 # User-installed apps not in `install` or `keep`: "keep-others" (default) or "remove-others" (asks first).

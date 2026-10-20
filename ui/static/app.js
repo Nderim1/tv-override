@@ -12,6 +12,7 @@ const S = {
   live: {}, measuring: false, opts: { reboot: true, track: true }, store: null, storeError: null,
   agent: { items: [], seen: null },
   keys: null, keysError: null, capture: { state: null, presses: [], until: 0 },
+  screen: { live: false, interval: 2000, timer: null, busy: false, url: null, info: '', error: null, auto: false },
 };
 
 /* ------------------------------------------------------------------ api */
@@ -267,6 +268,9 @@ const onlineOf = (name) => S.tvs.find((t) => t.name === name)?.online;
 async function selectTv(name) {
   S.selected = name; S.viewRun = null; S.apps = null; S.appsError = null; S.keys = null; S.store = null;
   S.capture = { state: null, presses: [], until: 0 };
+  clearTimeout(S.screen.timer);
+  if (S.screen.url) URL.revokeObjectURL(S.screen.url);
+  Object.assign(S.screen, { live: false, url: null, info: '', error: null, auto: false, busy: false });
   location.hash = `tv=${name}`;
   renderFleet();
   $('#main').innerHTML = `<div class="panel"><span class="spin">◌</span> loading ${esc(name)}…</div>`;
@@ -278,6 +282,7 @@ async function selectTv(name) {
   loadStore();
   loadApps();
   loadKeys();
+  screenTick();
 }
 
 /* ------------------------------------------------------------------ fleet */
@@ -329,6 +334,7 @@ function renderMain() {
   }
   $('#main').innerHTML = `
     <section class="panel" id="sec-head"></section>
+    <section class="panel" id="sec-screen"></section>
     <section id="sec-agent"></section>
     <section id="sec-alert"></section>
     <section class="panel" id="sec-perf"></section>
@@ -343,6 +349,7 @@ function renderMain() {
     <section class="panel" id="sec-history"></section>
     <section class="panel danger" id="sec-danger"></section>`;
   renderLive();
+  renderScreen();
   renderStore();
   renderApps();
   renderKeys();
@@ -406,6 +413,9 @@ function renderHead() {
 function renderAlert() {
   const { L, job } = busyState();
   const el = $('#sec-alert');
+  const needsYou = (job && (job.confirm || job.waiting)) || (L && L.state === 'running' && L.waiting);
+  if (needsYou && !S.screen.live && !S.screen.auto) { S.screen.auto = true; setLive(true); }  // show where they are on the TV
+  if (!needsYou) S.screen.auto = false;
   if (job && job.confirm) {
     el.innerHTML = `<div class="alert" role="alert">
       <div class="alert-title">⚠ ACTION REQUIRED · APPROVE UNINSTALLS</div>
@@ -735,6 +745,80 @@ function renderDanger() {
       <div class="table-wrap" style="max-height:220px;margin-top:6px"><table class="t"><tbody>${reinstall.map((p) => `<tr><td class="pkg-name">${esc(p)}</td>
       <td style="text-align:right"><button class="btn btn-sm" data-action="open-play" data-pkg="${esc(p)}">OPEN IN PLAY STORE ON TV</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
 }
+
+/* ------------------------------------------------------------------ live screen */
+
+function renderScreen() {
+  const el = $('#sec-screen');
+  if (!el) return;
+  const Sc = S.screen;
+  el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[00]</b>live screen</h2>
+    <span class="row" id="screen-controls"></span></div>
+    <div class="screen-wrap ${Sc.big ? 'big' : ''}" data-action="screen-size" title="Click to enlarge / shrink">
+      <img id="screen-img" alt="What the TV shows right now" ${Sc.url ? `src="${Sc.url}"` : ''}>
+      <div class="screen-badge" id="screen-badge"></div>
+      <div class="screen-msg" id="screen-msg"></div>
+    </div>
+    <div class="hint" id="screen-info" style="margin-top:6px"></div>`;
+  renderScreenControls();
+  renderScreenStatus();
+}
+
+function renderScreenControls() {
+  const el = $('#screen-controls');
+  if (!el) return;
+  const Sc = S.screen;
+  el.innerHTML = `<button class="btn btn-sm ${Sc.live ? 'btn-primary' : ''}" data-action="screen-live" aria-pressed="${Sc.live}">${Sc.live ? '● LIVE' : '○ LIVE OFF'}</button>
+    <select class="decision" id="screen-interval" aria-label="Refresh rate">${[[1000, 'every 1 s'], [2000, 'every 2 s'], [5000, 'every 5 s']].map(([v, l]) =>
+      `<option value="${v}" ${Sc.interval === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <button class="btn btn-sm" data-action="screen-now" ${Sc.busy ? 'disabled' : ''}>↻ NOW</button>
+    <button class="btn btn-sm" data-action="screen-save" ${Sc.url ? '' : 'disabled'}>⤓ SAVE</button>
+    <button class="btn btn-sm" data-action="screen-full">FULL SIZE</button>`;
+}
+
+function renderScreenStatus() {
+  const Sc = S.screen;
+  if ($('#screen-badge')) $('#screen-badge').innerHTML = Sc.live ? '<span class="busy">●</span> LIVE' : Sc.url ? 'STILL' : '';
+  if ($('#screen-msg')) $('#screen-msg').textContent = Sc.error ? Sc.error : !Sc.url ? (Sc.busy ? 'capturing…' : 'no picture yet') : '';
+  if ($('#screen-info')) $('#screen-info').textContent = Sc.info + (Sc.url ? ' · video apps can show black (copy protection)' : '');
+}
+
+async function screenTick(once = false) {
+  const Sc = S.screen, tv = S.selected;
+  clearTimeout(Sc.timer);
+  if (!tv || !$('#screen-img')) return;
+  const again = () => { if (Sc.live && !once) Sc.timer = setTimeout(() => screenTick(), Sc.interval); };
+  if (document.hidden || Sc.busy) { again(); return; }
+  if (!onlineOf(tv)) { Sc.error = 'TV offline'; renderScreenStatus(); again(); return; }
+  Sc.busy = true; renderScreenStatus();
+  try {
+    const res = await fetch(`/api/tv/${tv}/screen?w=960`, { headers: { 'X-Token': window.TOKEN } });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    const blob = await res.blob();
+    if (tv !== S.selected) return;
+    const old = Sc.url;
+    Sc.url = URL.createObjectURL(blob);
+    const img = $('#screen-img');
+    if (img) img.src = Sc.url;
+    if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
+    Sc.error = null;
+    Sc.info = `captured ${res.headers.get('X-Captured')} · ${res.headers.get('X-Capture-Ms')} ms on the TV · ${Math.round(blob.size / 1024)} KB`;
+  } catch (e) {
+    Sc.error = e.message;
+  } finally {
+    Sc.busy = false;
+    renderScreenStatus(); renderScreenControls();
+    again();
+  }
+}
+
+function setLive(on) {
+  S.screen.live = on;
+  renderScreenControls(); renderScreenStatus();
+  if (on) screenTick(); else clearTimeout(S.screen.timer);
+}
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S.screen.live) screenTick(); });
 
 /* ------------------------------------------------------------------ app store */
 
@@ -1119,6 +1203,14 @@ document.addEventListener('click', async (e) => {
     } else if (a === 'back-live') { S.viewRun = null; renderLive(); }
     else if (a === 'restore') restoreModal();
     else if (a === 'run-picker') runPicker();
+    else if (a === 'screen-live') setLive(!S.screen.live);
+    else if (a === 'screen-now') screenTick(true);
+    else if (a === 'screen-size') { S.screen.big = !S.screen.big; $('.screen-wrap')?.classList.toggle('big', S.screen.big); }
+    else if (a === 'screen-full') window.open(`/api/tv/${S.selected}/screen?w=0&token=${encodeURIComponent(window.TOKEN)}`, '_blank', 'noopener');
+    else if (a === 'screen-save' && S.screen.url) {
+      const link = document.createElement('a');
+      link.href = S.screen.url; link.download = `${S.selected}-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`; link.click();
+    }
     else if (a === 'recipe') {
       const steps = new Set(S.meta.recipes[t.dataset.recipe]);
       document.querySelectorAll('[data-step]').forEach((c) => { if (!c.disabled) c.checked = steps.has(c.dataset.step); });
@@ -1216,6 +1308,7 @@ document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.matches('[data-opt]')) { S.opts[t.dataset.opt] = t.checked; return; }
   if (t.id === 'pick-launcher') { updateHomeHint(); return; }
+  if (t.id === 'screen-interval') { S.screen.interval = +t.value; if (S.screen.live) screenTick(); return; }
   if (t.matches('[data-step]')) { document.querySelectorAll('[data-action="recipe"]').forEach((b) => b.setAttribute('aria-selected', false)); return; }
   if (t.matches('select.decision')) {
     t.disabled = true;

@@ -23,6 +23,7 @@ adb -s <ip>:5555 logcat -d | grep -iE '<package>|denied|forbid|fail|exception' |
 | Laptop cannot reach GitHub | `curl -m 10 https://api.github.com` | Network/firewall: use the vendored APK in `apks/`, or the app's own updater on the TV |
 | Broadcast to Remote Remap returns result=0 | app installed? autostart allowed? | Install/upgrade to Remote Remap ≥ 2.0 and run `tvctl apply` (grants autostart first) |
 | `dumpsys` prints "Broken pipe" | — | Harmless: output was cut by `head`/`grep -m` |
+| Screenshot is black | `tvctl screenshot` while a video plays | Copy-protected (DRM) video is blanked in screenshots; menus and launchers are captured normally |
 
 ## When you find a new one
 

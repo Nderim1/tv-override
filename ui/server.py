@@ -294,6 +294,8 @@ class App:
         self.desk = Desk(tv.STATE_DIR / "agent.json", self.bus)
         self.jobs = {}  # tv name -> Job
         self.captures = set()  # tv names currently listening for remote buttons
+        self.screens = {}  # (tv, width) -> (time, bytes, content type)
+        self.screen_locks = {}
         self.lock = threading.Lock()
 
     # ---- data
@@ -371,6 +373,26 @@ class App:
             if job.run_id == run_id:
                 return job
         raise self.tv.TvError("no active run with that id (finished, or started from the terminal)")
+
+    # ---- live screen
+
+    def screen(self, name, width):
+        """Latest screenshot as a small JPEG; one capture at a time per TV, shared by all viewers for ~0.8 s."""
+        key = (name, width)
+        with self.lock:
+            lock = self.screen_locks.setdefault(name, threading.Lock())
+        with lock:
+            cached = self.screens.get(key)
+            if cached and time.time() - cached[0] < 0.8:
+                return cached
+            prof = self.tv.load_profile(name)
+            dev = self.tv.Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
+            started = time.time()
+            png = dev.screencap()
+            data, ctype = (png, "image/png") if width == 0 else self.tv.to_jpeg(png, width)
+            entry = (time.time(), data, ctype, round((time.time() - started) * 1000))
+            self.screens[key] = entry
+            return entry
 
     # ---- remote buttons
 
@@ -508,6 +530,24 @@ def make_handler(app):
                 return self._send(403, {"error": "forbidden"})
             if method == "GET" and path == "/api/events":
                 return self._sse()
+            sm = re.fullmatch(r"/api/tv/([a-z0-9-]+)/screen", path)
+            if method == "GET" and sm:
+                if sm.group(1) not in app.profiles():
+                    return self._send(404, {"error": "no such TV"})
+                try:
+                    width = max(0, min(int(query.get("w", ["960"])[0]), 1920))
+                    taken, data, ctype, ms = app.screen(sm.group(1), width)
+                except (tv.TvError, ValueError) as e:
+                    return self._send(503, {"error": str(e)})
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Capture-Ms", str(ms))
+                self.send_header("X-Captured", time.strftime("%H:%M:%S", time.localtime(taken)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             try:
                 return self._send(200, self._api(method, path, query))
             except tv.TvError as e:

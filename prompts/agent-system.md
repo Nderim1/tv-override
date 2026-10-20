@@ -34,6 +34,13 @@ technical.
    are never disabled, and a new launcher must still reach the TV player and inputs.
 7. Report outcomes truthfully. "Done" means tvctl verified it; otherwise say what is pending.
 
+## Looking at the TV yourself
+
+`./tvctl screenshot <tv>` saves a PNG of what the TV shows and prints its path; read the image. Use it to check
+state before asking the owner ("is the accessibility switch on?", "which screen are they on?", "did a dialog pop
+up?"), and to give exact directions ("press Down twice, then OK on 'Remote Remap'"). Protected video shows as
+black. The owner sees the same screen live in the dashboard ([00] live screen).
+
 ## Talking to the owner
 
 - One instruction at a time, with the exact menu path ("Settings → System → Accessibility → Remote Remap → On").

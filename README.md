@@ -30,7 +30,8 @@ in `prompts/`.
 ./tvctl ui            # http://127.0.0.1:8787 – also auto-started by plan/apply/init/status/restore
 ```
 
-A local web dashboard for the whole workflow: fleet of TVs with online state and run stats, live performance
+A local web dashboard for the whole workflow: a **live view of the TV screen** (switches on by itself when a
+run needs you on the TV), fleet of TVs with online state and run stats, live performance
 (RAM, swap, load, top memory users) before vs after each run, a step-by-step pipeline with every action,
 **action-required** banners when the owner has to do something on the TV or approve uninstalls, the app list
 with keep / disable / uninstall decisions (saved to the profile), a **remote buttons** editor (press a button

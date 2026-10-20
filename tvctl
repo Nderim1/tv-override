@@ -17,6 +17,7 @@
   tvctl ask --title Q [--kind ...]        ask the owner in the dashboard, print the answer (agent use)
   tvctl inbox [--wait N]                  the owner's requests to the agent; --reply ID TEXT [--done]
   tvctl notify --title T [--level ...]    post a note; --level need-chat = "come to the chat"
+  tvctl screenshot PROFILE [--out F]      PNG of what the TV shows (for the agent to look at)
   tvctl snapshot PROFILE
 
 Add --json to any command for machine-readable output (used by the LLM agent).
@@ -34,6 +35,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import tempfile
 import sys
 import time
 import urllib.error
@@ -172,6 +174,20 @@ class Device:
         for m in re.finditer(r"([\d,]+)K: (\S+) \(pid", block):
             res[m.group(2)] = int(m.group(1).replace(",", "")) // 1024
         return res
+
+    def screencap(self):
+        """PNG of what the TV shows right now (DRM-protected video shows up black)."""
+        for attempt in (0, 1):
+            try:
+                p = subprocess.run([self.adb_bin, "-s", self.addr, "exec-out", "screencap", "-p"],
+                                   capture_output=True, timeout=15)
+            except subprocess.TimeoutExpired:
+                raise TvError("screenshot timed out")
+            if p.stdout.startswith(b"\x89PNG"):
+                return p.stdout
+            if attempt == 0:  # not connected yet (e.g. after a router restart): connect once and retry
+                run([self.adb_bin, "connect", self.addr], timeout=10)
+        raise TvError("could not take a screenshot: " + (p.stderr.decode(errors="replace").strip()[-200:] or "TV unreachable"))
 
     def reboot_and_wait(self, timeout=240):
         self.adb("reboot")
@@ -340,6 +356,22 @@ def log_history(prof, actions):
         for a in actions:
             if a["status"] in ("done", "error"):
                 f.write(json.dumps({"time": now_iso(), **{k: v for k, v in a.items() if k != "fn"}}) + "\n")
+
+
+def to_jpeg(png, width=960, quality=70):
+    """Downscale a PNG to a small JPEG with macOS sips (for the live view). Falls back to the PNG."""
+    if not shutil.which("sips"):
+        return png, "image/png"
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = Path(d) / "s.png", Path(d) / "s.jpg"
+        src.write_bytes(png)
+        args = ["sips", "-s", "format", "jpeg", "-s", "formatOptions", str(quality)]
+        if width:
+            args += ["-Z", str(width)]
+        r = subprocess.run(args + [str(src), "--out", str(dst)], capture_output=True, timeout=15)
+        if r.returncode == 0 and dst.exists():
+            return dst.read_bytes(), "image/jpeg"
+    return png, "image/png"
 
 
 def perf(dev, pkgs=None):
@@ -1489,6 +1521,18 @@ def cmd_inventory(args):
     return EXIT_OK
 
 
+def cmd_screenshot(args):
+    """Save what the TV shows. The agent reads the PNG to check the screen instead of asking the owner."""
+    prof = load_profile(args.profile)
+    dev = Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
+    png = dev.screencap()
+    out = Path(args.out) if args.out else STATE_DIR / prof["tv"]["name"] / "screens" / f"{datetime.now():%Y%m%d-%H%M%S}.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(png)
+    emit(args, {"screenshot": str(out)}, lambda: print(out))
+    return EXIT_OK
+
+
 def cmd_snapshot(args):
     ctx = ctx_for(args)
     path = take_snapshot(ctx.dev, ctx.prof)
@@ -2164,6 +2208,8 @@ def main():
     p = add("status", cmd_status, "show TV state")
     p.add_argument("--reboot", action="store_true", help="reboot first and check the TV boots into the profile")
     add("snapshot", cmd_snapshot, "save the current package state")
+    p = add("screenshot", cmd_screenshot, "save a PNG of what the TV shows right now")
+    p.add_argument("--out", help="file to write (default state/<tv>/screens/<time>.png)")
     p = add("ask", cmd_ask, "ask the owner in the dashboard and wait for the answer", profile=False)
     p.add_argument("--title", required=True)
     p.add_argument("--body")
