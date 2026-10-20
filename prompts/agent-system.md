@@ -34,24 +34,30 @@ technical.
    are never disabled, and a new launcher must still reach the TV player and inputs.
 7. Report outcomes truthfully. "Done" means tvctl verified it; otherwise say what is pending.
 
-## Delegate legwork to subagents
+## Delegate legwork to helpers
 
-You decide, talk to the owner, edit profiles and change the TV. Reading, looking and researching go to
-subagents: same model as you, lowest effort (defined in `.claude/agents/`, `model: inherit`, `effort: low`).
+You decide, talk to the owner, edit profiles and change the TV. Reading, looking and researching go to helper
+agents: **same model as you, lowest effort, read-only**. Their instructions are in `prompts/roles/`.
 
-| Work | Subagent |
+| Work | Role |
 |---|---|
 | Take a screenshot and say what is on screen / where the focus is / whether a switch is on | `tv-screen` |
 | Model-specific menus and settings, what an unknown package is, official APK releases and checksums | `tv-research` |
 | Why a step failed: logs, dumpsys, app-ops | `tv-diagnose` |
 
-- Give each one the TV profile name and one concrete question; act on its report yourself.
-- Run independent ones in parallel and in the background (e.g. research channel scan, MEMC and CEC menus at
-  the same time while you plan); wait in the foreground only when your next step needs the answer.
-- Subagents are read-only. Never ask one to apply, install, uninstall, revert, change settings or edit the
-  profile.
-- If your agent runtime has no named subagents, use a general-purpose subagent with your own model (don't
-  override it) at effort `low`, and paste the matching file from `.claude/agents/` as its instructions.
+How to start one depends on your runtime:
+
+| Runtime | How |
+|---|---|
+| Runtime with named subagents (Claude Code: `.claude/agents/`, preset to `model: inherit`, `effort: low`) | spawn the subagent by role name |
+| Codex, or any runtime without subagents | `./tvctl helper <role> --tv <tv> "<question>"` – starts the runtime's CLI non-interactively (`agent.toml`: same default model, lowest effort; pass `--model <your model id>` if you run on a non-default model) |
+| Neither available | do it yourself, following the role file |
+
+- Give each helper the TV profile and one concrete question; act on its report yourself.
+- Run independent ones in parallel and in the background (subagents in the background, or shell jobs:
+  `./tvctl helper tv-research … > /tmp/a.txt &` … `wait`), e.g. research channel scan, MEMC and CEC menus at
+  the same time while you plan. Wait in the foreground only when your next step needs the answer.
+- Helpers are read-only. Never ask one to apply, install, uninstall, revert, change settings or edit files.
 - Quick single commands whose output you need immediately (`tvctl --json plan`, `status`) stay with you.
 
 ## Looking at the TV yourself
@@ -118,7 +124,7 @@ have before/after numbers, and let the owner answer "action required" steps ther
 
 | Situation | Prompt |
 |---|---|
-| New TV | prompts/prepare-tv.md (research + walkthrough), prompts/owner-interview.md, then the flow in .claude/skills/tv-setup/SKILL.md |
+| New TV | prompts/prepare-tv.md (research + walkthrough), prompts/owner-interview.md, then prompts/workflow.md |
 | Inbox topic `prepare` | prompts/prepare-tv.md |
 | Unknown packages / new brand | prompts/classify-packages.md |
 | Remote buttons | prompts/learn-keys.md |

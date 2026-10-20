@@ -1132,7 +1132,7 @@ function renderAgent() {
   el.innerHTML = `
     ${chats.map((n) => `<div class="need-chat" role="alert"><div class="who">💬 THE AGENT NEEDS YOU IN THE CHAT</div>
       <h3 style="margin:6px 0 2px">${esc(n.title)}</h3>${n.body ? `<div class="body" style="white-space:pre-wrap;color:var(--text-2)">${esc(n.body)}</div>` : ''}
-      <div class="row" style="margin-top:8px"><span class="hint">Open your Claude Code chat to continue.</span><button class="btn btn-sm" data-action="note-dismiss" data-id="${n.id}">DISMISS</button></div></div>`).join('')}
+      <div class="row" style="margin-top:8px"><span class="hint">Go to your agent chat (Claude Code, Codex, …) to continue.</span><button class="btn btn-sm" data-action="note-dismiss" data-id="${n.id}">DISMISS</button></div></div>`).join('')}
     ${asks.map(askCard).join('')}
     <div class="panel">
       <div class="panel-head"><h2 class="panel-title"><b>[AI]</b>agent</h2><span class="hint">questions come here first; the chat is the fallback</span></div>

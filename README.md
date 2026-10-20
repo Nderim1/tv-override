@@ -5,8 +5,8 @@ remove bloat and tracking, install the apps the owner actually uses, swap the ho
 screensaver and remap the remote's app buttons, while live TV and HDMI inputs keep working.
 
 Each TV is described by a profile. `tvctl` makes the TV match it over ADB, and can be re-run any time
-(after vendor updates too). An LLM agent (Claude Code) runs the workflow with the owner using the prompts
-in `prompts/`.
+(after vendor updates too). An LLM agent runs the workflow with the owner using the prompts in `prompts/`: it works with any agent
+runtime that can run shell commands (Codex, Claude Code, …), see "Agents" below.
 
 ## Layout
 
@@ -21,7 +21,9 @@ in `prompts/`.
 | `state/<tv>/` | Baseline snapshot + history of every change (used by restore) |
 | `ui/` | The control center: `server.py` (stdlib HTTP + SSE) and `static/` (vanilla JS, no build) |
 | `prompts/` | Agent prompts: system prompt, owner interview, package classification, keys, diagnosis, APK checks |
-| `.claude/skills/tv-setup/` | Claude Code skill that runs the whole flow |
+| `AGENTS.md`, `prompts/workflow.md` | Agent entry point and workflow, runtime-neutral |
+| `.agents/skills/`, `.claude/` | Thin per-runtime wrappers (skill, Claude Code subagents) |
+| `agent.toml` | How `tvctl helper` starts helper agents (same model, lowest effort) |
 | `legacy/` | The first one-off scripts from the living-room TV |
 
 ## Control center (dashboard)
@@ -61,7 +63,8 @@ On the TV: Settings → System → About → click "Build" 7× → Developer opt
 ./tvctl status kitchen-sony --reboot            # verify after a reboot
 ```
 
-Or in Claude Code: "set up the TV at 192.168.1.50" and the `tv-setup` skill takes it from there.
+Or ask your agent (Codex, Claude Code, …): "set up the TV at 192.168.1.50". It follows `AGENTS.md` →
+`prompts/workflow.md` (also available as the `tv-setup` skill).
 
 ## Pick what a run does
 
@@ -130,3 +133,22 @@ over the old version).
 - New brand or device (e.g. a projector) → `prompts/classify-packages.md`, start from `presets/_template.toml`.
 - New app or APK update → `prompts/verify-apk.md`, then `apps.toml`.
 - New failure mode → `prompts/diagnose.md`.
+
+## Agents (model-agnostic)
+
+Everything the agent needs is plain Markdown plus the `tvctl` CLI, so any runtime that can run shell commands
+works. Entry point: `AGENTS.md` (read by Codex and most agents; `CLAUDE.md` just imports it).
+
+| Piece | Shared source | Runtime wrappers |
+|---|---|---|
+| Rules | `prompts/agent-system.md` | – |
+| Workflow | `prompts/workflow.md` | skill `tv-setup`: `.agents/skills/` (Codex), `.claude/skills/` |
+| Helper roles | `prompts/roles/*.md` | Claude Code subagents `.claude/agents/`; others: `./tvctl helper` |
+| Talking to the owner | `tvctl ask / inbox / notify` + dashboard | – |
+
+Helpers always run on the same model as the main agent at the lowest effort: Claude Code subagents use
+`model: inherit` / `effort: low`; `tvctl helper` starts the runtime's CLI with its default model and the
+lowest effort from `agent.toml` (Codex: `codex exec … -c model_reasoning_effort="low"`).
+
+**Codex:** start it in this folder with network access, because tvctl talks to the TV over the LAN and helpers
+research online: `codex -c sandbox_workspace_write.network_access=true` (or approve network use when asked).

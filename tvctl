@@ -17,6 +17,7 @@
   tvctl ask --title Q [--kind ...]        ask the owner in the dashboard, print the answer (agent use)
   tvctl inbox [--wait N]                  the owner's requests to the agent; --reply ID TEXT [--done]
   tvctl notify --title T [--level ...]    post a note; --level need-chat = "come to the chat"
+  tvctl helper ROLE --tv TV "QUESTION"    read-only helper agent (same model, lowest effort; agent.toml)
   tvctl screenshot PROFILE [--out F]      PNG of what the TV shows (for the agent to look at)
   tvctl discover PROFILE                  read all TV data (state/<tv>/dossier.json)
   tvctl guide show|set|verify|done|skip|auto PROFILE ...   preparation walkthrough for this TV
@@ -2081,6 +2082,70 @@ def cmd_notify(args):
     return EXIT_OK
 
 
+# ---- helper agents (model-agnostic delegation)
+
+ROLES_DIR = ROOT / "prompts" / "roles"
+
+
+def helper_runtime(name=None):
+    cfg = load_toml(ROOT / "agent.toml")
+    choice = name or os.environ.get("TVCTL_AGENT_RUNTIME") or cfg.get("runtime", "auto")
+    runtimes = cfg.get("runtimes", {})
+    if choice == "auto":
+        choice = next((r for r in cfg.get("order", list(runtimes)) if r in runtimes
+                       and shutil.which(runtimes[r]["command"][0])), None)
+        if not choice:
+            raise TvError("no agent CLI found for helpers (install codex or claude, or set runtime in agent.toml)")
+    if choice not in runtimes:
+        raise TvError(f"unknown runtime {choice}; agent.toml has {', '.join(runtimes)}")
+    return choice, runtimes[choice], cfg
+
+
+def helper_command(rt, cfg, out, model=None):
+    model = model or os.environ.get("TVCTL_AGENT_MODEL") or cfg.get("model") or ""
+    args = []
+    for part in rt["command"]:
+        if part == "{model_args}":
+            args += [a.replace("{model}", model) for a in rt.get("model_args", [])] if model else []
+        else:
+            args.append(part.replace("{effort}", rt.get("effort", "low")).replace("{out}", str(out)))
+    return args
+
+
+def cmd_helper(args):
+    """Run one read-only helper role on the same model at the lowest effort and print its answer."""
+    if args.list:
+        name, rt, cfg = helper_runtime(args.runtime)
+        roles = sorted(p.stem for p in ROLES_DIR.glob("*.md"))
+        emit(args, {"runtime": name, "command": helper_command(rt, cfg, "<out>", args.model), "roles": roles},
+             lambda: print(f"runtime: {name}\ncommand: {' '.join(helper_command(rt, cfg, '<out>', args.model))}\n"
+                           f"roles: {', '.join(roles)}"))
+        return EXIT_OK
+    if not args.role or not args.question:
+        raise TvError("usage: tvctl helper <role> --tv <tv> \"<question>\"")
+    role_file = ROLES_DIR / f"{args.role}.md"
+    if not role_file.exists():
+        raise TvError(f"no role {args.role} (prompts/roles/)")
+    name, rt, cfg = helper_runtime(args.runtime)
+    prompt = (role_file.read_text() + f"\n\n---\nRepository root (run commands from here): {ROOT}\n"
+              + (f"TV profile: {args.tv}\n" if args.tv else "")
+              + f"Question from the main agent: {' '.join(args.question)}\n"
+              "Answer with your report only. You are read-only: never change the TV or any file.\n")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "answer.txt"
+        cmd = helper_command(rt, cfg, out, args.model)
+        try:
+            p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=ROOT,
+                               timeout=args.timeout or cfg.get("timeout", 600))
+        except subprocess.TimeoutExpired:
+            raise TvError(f"{args.role} helper timed out")
+        answer = out.read_text().strip() if out.exists() else p.stdout.strip()
+        if p.returncode != 0 and not answer:
+            raise TvError(f"{name} helper failed ({p.returncode}): {(p.stderr or p.stdout).strip()[-400:]}")
+    emit(args, {"role": args.role, "runtime": name, "answer": answer}, lambda: print(answer))
+    return EXIT_OK
+
+
 def cmd_ui(args):
     sys.path.insert(0, str(ROOT / "ui"))
     import server
@@ -2514,6 +2579,14 @@ def main():
     p.add_argument("--body")
     p.add_argument("--level", choices=["info", "warn", "need-chat", "done"], default="info")
     p.add_argument("--tv")
+    p = add("helper", cmd_helper, "run a read-only helper agent role (same model, lowest effort)", profile=False)
+    p.add_argument("role", nargs="?", help="tv-screen | tv-research | tv-diagnose (prompts/roles/)")
+    p.add_argument("question", nargs="*")
+    p.add_argument("--tv", help="TV profile the question is about")
+    p.add_argument("--runtime", help="agent CLI from agent.toml (default: auto)")
+    p.add_argument("--model", help="model id of the main agent, if it is not the runtime's default")
+    p.add_argument("--timeout", type=int)
+    p.add_argument("--list", action="store_true", help="show the runtime, command and roles")
     p = add("ui", cmd_ui, "run the dashboard (control center)", profile=False)
     p.add_argument("--port", type=int, default=UI_PORT)
     p.add_argument("--no-open", action="store_true", help="don't open the browser")

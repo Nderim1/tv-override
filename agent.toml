@@ -1,0 +1,29 @@
+# How `tvctl helper <role>` starts a read-only helper agent (prompts/roles/<role>.md) in runtimes without
+# native subagents, e.g. Codex. Claude Code uses its native subagents (.claude/agents/) instead.
+#
+# Helpers run on the SAME model as the main agent at the LOWEST effort:
+# - model: empty = the runtime's configured default model, i.e. what the main agent normally runs on.
+#   If the main session switched models, pass `tvctl helper --model <id>` (or set TVCTL_AGENT_MODEL).
+# - effort: the lowest level the model supports (see `supported_reasoning_levels` in the runtime's model list).
+#
+# Placeholders in `command`: {effort}, {out} (file the final answer is written to), {model_args} (expands to
+# `model_args` when a model is set, else to nothing). The prompt is sent on stdin.
+
+runtime = "auto"               # auto = first installed runtime in `order`; env TVCTL_AGENT_RUNTIME overrides
+order = ["codex", "claude"]
+model = ""                     # env TVCTL_AGENT_MODEL overrides
+timeout = 600                  # seconds per helper run
+
+[runtimes.codex]
+effort = "low"                 # lowest level of gpt-6.1-sol; use "minimal" for models that offer it
+command = ["codex", "exec", "--ephemeral", "--skip-git-repo-check",
+           "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
+           "-c", "model_reasoning_effort=\"{effort}\"", "{model_args}", "-o", "{out}", "-"]
+model_args = ["-m", "{model}"]
+
+[runtimes.claude]
+# Normally not needed: inside Claude Code, use the native subagents. This is for running helpers from a
+# different runtime that has the Claude CLI installed. Effort for `claude -p` comes from its own settings.
+effort = "low"
+command = ["claude", "-p", "--output-format", "text", "{model_args}"]
+model_args = ["--model", "{model}"]
