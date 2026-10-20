@@ -70,3 +70,31 @@ player = "com.tcl.tv"
 "com.tcl.dashboard" = "Quick settings panel (picture, sound, inputs)"
 "com.tvos" = "TV OS service"
 "com.realtek.*" = "Realtek platform services"
+
+# ---- Preparation walkthrough (TCL Google TV). Menu names vary per model and firmware.
+
+[[prepare]]
+id = "channel-scan"
+only_if = "tuner"
+title = "Scan antenna / cable channels (free channels only)"
+why = "Only if you watch antenna or cable TV on this set. Scanning free channels only keeps paywalled channels out."
+path = ["TV app (red TV tile)", "Settings", "Channel", "Channel scan"]
+how = "Open the TV app, press the Settings (gear) button, Channel › Channel scan › Antenna or Cable. If there is a 'Scrambled channels' / 'Free only' option, choose free only. Start the scan. Follow the live screen if the menus look different."
+check = { type = "channels", min = 1 }
+required = false
+
+[[prepare]]
+id = "motion"
+title = "Picture: turn off motion smoothing"
+why = "Motion smoothing (MEMC) makes films look like soap operas and adds input lag."
+path = ["Settings", "Display & Sound", "Picture", "Motion clarity"]
+how = "Set motion smoothing / MEMC off and use the Movie picture mode for films. Leave it on only if the owner likes it."
+required = false
+
+[[prepare]]
+id = "network-standby"
+title = "Network standby (if available)"
+why = "Keeps the network on in standby so this app (and casting) can reach the TV without a power cycle."
+path = ["Settings", "System", "Power and energy", "Network standby"]
+how = "Turn it on if the menu exists on this model. It uses a little more power in standby."
+required = false

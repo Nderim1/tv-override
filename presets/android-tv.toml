@@ -31,3 +31,28 @@ packages = ["com.android.providers.tv", "com.google.android.tv"]
 [core]
 "com.google.android.tvlauncher" = "Stock home (handled by [launcher])"
 "com.google.android.tungsten.setupwraith" = "Setup wizard (handled by [launcher])"
+
+# ---- Preparation walkthrough (UNTESTED menu paths – verify on first use)
+
+[[prepare]]
+id = "update"
+title = "Install system updates first"
+why = "Updates can switch removed apps back on. Update before we set things up, not after."
+path = ["Settings", "Device Preferences", "About", "System update"]
+required = false
+
+[[prepare]]
+id = "account"
+only_if = "play_store"
+title = "Sign in to a Google account"
+why = "Needed to install apps from the Play Store."
+path = ["Settings", "Accounts & sign-in"]
+check = { type = "accounts", min = 1 }
+required = true
+
+[[prepare]]
+id = "privacy"
+title = "Turn off usage reports and ad personalisation"
+why = "Stops Google collecting usage data and personalising ads on this TV."
+path = ["Settings", "Device Preferences", "Usage & diagnostics"]
+required = false

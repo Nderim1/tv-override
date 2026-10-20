@@ -374,6 +374,34 @@ class App:
                 return job
         raise self.tv.TvError("no active run with that id (finished, or started from the terminal)")
 
+    # ---- preparation (dossier + guided walkthrough)
+
+    def prepare_view(self, name, build=True):
+        dossier = self.tv.load_dossier(name)
+        gpath = self.tv.guide_path(name)
+        guide = json.loads(gpath.read_text()) if gpath.exists() else None
+        if build and (guide is None or dossier is None):
+            ctx = self.ctx(name)
+            dossier = dossier or self.tv.discover(ctx)
+            guide = self.tv.load_guide(ctx)
+        return {"dossier": dossier, "guide": guide}
+
+    def research(self, name):
+        view = self.prepare_view(name)
+        d = view["dossier"]
+        text = (f"Research how to prepare this TV for the tv-override workflow and write a model-specific guide "
+                f"(prompts/prepare-tv.md, then `./tvctl guide set {name} <file>`). TV: {d['brand']} {d['model']} "
+                f"({d['props'].get('ro.product.name')}), Android {d['android']}, firmware {d['firmware']}, "
+                f"patch {d['security_patch']}, SoC {d['soc']}, {d['ram_mb']} MB RAM, tuner: "
+                f"{bool(d['live_tv']['tuner_inputs'])}, Play Store: {d['play_store']}, presets: {', '.join(d['presets'])}. "
+                f"Full data: state/{name}/dossier.json. Current guide: state/{name}/guide.json.")
+        item = self.desk.inbox_add({"tv": name, "topic": "prepare", "text": text})
+        guide = view["guide"]
+        guide["research"] = {"requested": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "inbox": item["id"]}
+        self.tv.guide_path(name).write_text(json.dumps(guide, indent=1))
+        self.bus.publish({"type": "prepare", "tv": name, "what": "guide"})
+        return item
+
     # ---- live screen
 
     def screen(self, name, width):
@@ -593,6 +621,8 @@ def make_handler(app):
                     return json.loads(run_path.read_text())
                 if name and sub == "/keys":
                     return app.keys_view(name)
+                if name and sub == "/prepare":
+                    return app.prepare_view(name, build=query.get("build") != ["0"])
                 if name and sub == "/store":
                     return tv.store_view(app.ctx(name))
                 if path == "/api/catalog":
@@ -677,6 +707,29 @@ def make_handler(app):
                     tv.set_home_settings(name, {k: body[k] for k in ("launcher", "screensaver", "animation_scale")
                                                 if k in body})
                     return {"ok": True}
+                if name and sub == "/discover":
+                    d = tv.discover(app.ctx(name))
+                    app.bus.publish({"type": "prepare", "tv": name, "what": "dossier"})
+                    return d
+                if name and sub == "/guide/rebuild":
+                    g = tv.load_guide(app.ctx(name), rebuild=True)
+                    app.bus.publish({"type": "prepare", "tv": name, "what": "guide"})
+                    return g
+                if name and sub == "/guide/research":
+                    return app.research(name)
+                gm = re.fullmatch(r"/guide/([a-z0-9-]{1,41})/(verify|done|skip|reset|auto)", sub or "")
+                if name and gm:
+                    if gm.group(2) in ("done", "skip", "reset"):  # no TV needed for these
+                        g = json.loads(tv.guide_path(name).read_text())
+                        st = next((x for x in g["steps"] if x["id"] == gm.group(1)), None)
+                        if not st:
+                            raise tv.TvError("no such step")
+                        st["status"] = {"done": "done", "skip": "skipped", "reset": "todo"}[gm.group(2)]
+                        tv.guide_path(name).write_text(json.dumps(g, indent=1))
+                    else:
+                        g = tv.guide_step_action(app.ctx(name), gm.group(1), gm.group(2))
+                    app.bus.publish({"type": "prepare", "tv": name, "what": "guide"})
+                    return g
                 if name and sub == "/measure":
                     return app.measure(name)
                 if name and sub == "/apps":

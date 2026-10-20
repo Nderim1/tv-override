@@ -18,6 +18,8 @@
   tvctl inbox [--wait N]                  the owner's requests to the agent; --reply ID TEXT [--done]
   tvctl notify --title T [--level ...]    post a note; --level need-chat = "come to the chat"
   tvctl screenshot PROFILE [--out F]      PNG of what the TV shows (for the agent to look at)
+  tvctl discover PROFILE                  read all TV data (state/<tv>/dossier.json)
+  tvctl guide show|set|verify|done|skip|auto PROFILE ...   preparation walkthrough for this TV
   tvctl snapshot PROFILE
 
 Add --json to any command for machine-readable output (used by the LLM agent).
@@ -329,6 +331,224 @@ def live_tv_status(dev, presets, pkgs):
             "channels": sum(1 for l in rows.splitlines() if l.startswith("Row:")),
             "player": player, "player_enabled": bool(player and pkgs.get(player, {}).get("enabled")),
             "protected_disabled": sorted(p for p in protected if p in pkgs and not pkgs[p]["enabled"])}
+
+
+# ---------------------------------------------------------------- discovery & preparation guide
+
+DOSSIER_PROPS = ["ro.product.brand", "ro.product.manufacturer", "ro.product.model", "ro.product.name",
+                 "ro.product.device", "ro.build.fingerprint", "ro.build.version.release", "ro.build.version.sdk",
+                 "ro.build.version.security_patch", "ro.build.version.incremental", "ro.board.platform",
+                 "ro.hardware", "ro.product.cpu.abi", "ro.build.characteristics", "persist.sys.locale",
+                 "ro.product.locale", "persist.sys.timezone", "ro.serialno"]
+DOSSIER_SETTINGS = [("global", "adb_enabled"), ("global", "development_settings_enabled"),
+                    ("global", "hdmi_control_enabled"), ("global", "hdmi_control_auto_wakeup_enabled"),
+                    ("global", "stay_on_while_plugged_in"), ("global", "auto_time"),
+                    ("system", "screen_off_timeout"), ("secure", "sleep_timeout"),
+                    ("secure", "screensaver_components"), ("global", "window_animation_scale")]
+# Settings a guide step may change itself ("let the app do it"): harmless, reversible TV conveniences only.
+AUTO_SETTINGS = {("global", "hdmi_control_enabled"), ("global", "hdmi_control_auto_wakeup_enabled"),
+                 ("global", "hdmi_control_auto_device_off_enabled"), ("system", "screen_off_timeout"),
+                 ("secure", "sleep_timeout")}
+
+
+def discover(ctx):
+    """Everything worth knowing about this TV before changing it. Saved as state/<tv>/dossier.json."""
+    dev = ctx.dev
+    sep = "@@SEP@@"
+    out = dev.sh(f"""{'; '.join(f'echo "{n}=$(getprop {n})"' for n in DOSSIER_PROPS)}; echo {sep};
+        grep -c ^processor /proc/cpuinfo; echo {sep}; grep -E 'MemTotal' /proc/meminfo; echo {sep}; df -k /data | tail -1;
+        echo {sep}; wm size; wm density; echo {sep}; ip -o -4 addr show 2>/dev/null; echo {sep};
+        dumpsys account 2>/dev/null | grep -cE '^ *Account [{{]'; echo {sep};
+        grep -E '^N: Name=' /proc/bus/input/devices; echo {sep}; cat /proc/uptime""", timeout=60)
+    parts = out.split(sep)
+    props = dict(l.split("=", 1) for l in parts[0].splitlines() if "=" in l)
+    num = lambda t: int(re.search(r"\d+", t).group()) if re.search(r"\d+", t or "") else None
+    df = parts[3].split()
+    size = re.search(r"(\d+)x(\d+)", parts[4])
+    nets = [{"iface": m.group(1), "ip": m.group(2)} for m in re.finditer(r"\d+: (\S+)\s+inet (\d+\.\d+\.\d+\.\d+)", parts[5])
+            if m.group(1) != "lo"]
+    remotes = [m.group(1) for m in re.finditer(r'Name="([^"]+)"', parts[7])]
+    pkgs = ctx.pkgs
+    counts = {}
+    for pkg, info in pkgs.items():
+        cls = ctx.classifier.classify(pkg)[0]
+        cls = "user" if info["user"] and cls == "unknown" else cls
+        counts[cls] = counts.get(cls, 0) + 1
+    homes = ctx.dev.sh("cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME")
+    vending = ctx.installed("com.android.vending")
+    live = live_tv_status(dev, ctx.presets, pkgs)
+    d = {
+        "taken": now_iso(), "tv": ctx.prof["tv"]["name"], "props": props,
+        "brand": props.get("ro.product.brand") or props.get("ro.product.manufacturer"),
+        "model": props.get("ro.product.model"), "android": props.get("ro.build.version.release"),
+        "security_patch": props.get("ro.build.version.security_patch"), "firmware": props.get("ro.build.version.incremental"),
+        "soc": props.get("ro.board.platform") or props.get("ro.hardware"),
+        "cpu_cores": num(parts[1]), "ram_mb": (num(parts[2]) or 0) // 1024,
+        "storage_total_gb": round(int(df[1]) / 1048576, 1) if len(df) > 3 else None,
+        "storage_free_gb": round(int(df[3]) / 1048576, 1) if len(df) > 3 else None,
+        "display": f"{size.group(1)}x{size.group(2)}" if size else None,
+        "network": nets, "locale": props.get("persist.sys.locale") or props.get("ro.product.locale"),
+        "timezone": props.get("persist.sys.timezone"),
+        "play_store": vending, "play_store_version": ctx.dev.version("com.android.vending") if vending else None,
+        "google_accounts": num(parts[6]) or 0,
+        "remotes": [r for r in remotes if not re.search(r"virtual|keypad|DMIC|gpio", r, re.I)],
+        "live_tv": live, "home": ctx.dev.home(),
+        "launchers": sorted({l.strip().split("/")[0] for l in homes.splitlines() if "/" in l}),
+        "settings": {f"{ns}:{k}": dev.setting(ns, k) for ns, k in DOSSIER_SETTINGS},
+        "packages": {"total": len(pkgs), "classes": counts},
+        "presets": [p.get("preset", {}).get("name") for p in ctx.presets],
+        "uptime_h": round(float((parts[8].split() or ["0"])[0]) / 3600, 1),
+    }
+    d["notes"] = dossier_notes(d)
+    (state_dir(ctx.prof) / "dossier.json").write_text(json.dumps(d, indent=1))
+    return d
+
+
+def dossier_notes(d):
+    """Plain-language findings that matter for the setup."""
+    notes = []
+    if d["ram_mb"] and d["ram_mb"] < 2500:
+        notes.append(("warn", f"Low RAM ({d['ram_mb']} MB): a lighter launcher and debloat help a lot"))
+    if not d["play_store"]:
+        notes.append(("warn", "No Play Store: apps must come from verified APKs in the catalog"))
+    elif not d["google_accounts"]:
+        notes.append(("warn", "No Google account signed in: Play Store installs need one"))
+    if d["live_tv"]["tuner_inputs"]:
+        notes.append(("info", f"Has a TV tuner; {d['live_tv']['channels']} channel(s) scanned"))
+    if d["packages"]["classes"].get("unknown"):
+        notes.append(("warn", f"{d['packages']['classes']['unknown']} unclassified package(s): classify before debloating"))
+    if not [p for p in d["presets"] if p not in ("core", "streaming-apps")]:
+        notes.append(("warn", "No brand preset matched: this brand is new to the project"))
+    patch = d.get("security_patch") or ""
+    if patch and patch < time.strftime("%Y-%m-%d", time.localtime(time.time() - 365 * 86400)):
+        notes.append(("warn", f"Security patch {patch} is over a year old: check for a system update first"))
+    return [{"level": lv, "text": t} for lv, t in notes]
+
+
+def load_dossier(name):
+    path = STATE_DIR / name / "dossier.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def guide_path(name):
+    return STATE_DIR / name / "guide.json"
+
+
+def builtin_guide(ctx, dossier):
+    """Preparation steps from the presets' [[prepare]] tables, filtered for this TV."""
+    conditions = {
+        "tuner": bool(dossier["live_tv"]["tuner_inputs"]),
+        "play_store": dossier["play_store"],
+        "hdmi": dossier["live_tv"]["external_inputs"] > 0,
+        "low_ram": (dossier["ram_mb"] or 0) < 2500,
+    }
+    steps = [{"id": "adb", "title": "Developer options and USB debugging", "why": "Lets this app talk to the TV.",
+              "path": ["Settings", "System", "About", "Build (click 7×)", "Developer options", "USB debugging"],
+              "how": "Already done: the app is connected.", "check": {"type": "adb"}, "required": True}]
+    for p in all_presets().values():
+        name = p.get("preset", {}).get("name")
+        if name not in dossier["presets"]:
+            continue
+        for st in p.get("prepare", []):
+            if st.get("only_if") and not conditions.get(st["only_if"], False):
+                continue
+            steps.append({k: st[k] for k in ("id", "title", "why", "path", "how", "check", "auto", "required", "source")
+                          if k in st} | {"from": name})
+    return {"tv": ctx.prof["tv"]["name"], "source": "built-in", "created": now_iso(),
+            "summary": "Generic preparation from the presets. Ask the agent to research this exact model for "
+                       "model-specific menus.", "steps": [dict(s, status="todo") for s in steps]}
+
+
+def validate_guide(guide):
+    if not isinstance(guide.get("steps"), list) or not guide["steps"]:
+        raise TvError("guide needs a non-empty steps list")
+    ids = set()
+    for st in guide["steps"]:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", str(st.get("id", ""))) or st["id"] in ids:
+            raise TvError(f"step ids must be unique slugs: {st.get('id')!r}")
+        ids.add(st["id"])
+        if not st.get("title"):
+            raise TvError(f"step {st['id']} needs a title")
+        chk = st.get("check")
+        if chk and chk.get("type") not in ("adb", "setting", "channels", "accounts", "package", "a11y"):
+            raise TvError(f"step {st['id']}: unknown check type {chk.get('type')}")
+        auto = st.get("auto")
+        if auto and (auto.get("ns"), auto.get("key")) not in AUTO_SETTINGS:
+            raise TvError(f"step {st['id']}: the app may only change {sorted(AUTO_SETTINGS)} by itself")
+        st.setdefault("status", "todo")
+        st["path"] = [str(x)[:60] for x in st.get("path", [])][:10]
+    return guide
+
+
+def load_guide(ctx, rebuild=False):
+    path = guide_path(ctx.prof["tv"]["name"])
+    if path.exists() and not rebuild:
+        return json.loads(path.read_text())
+    dossier = load_dossier(ctx.prof["tv"]["name"]) or discover(ctx)
+    guide = builtin_guide(ctx, dossier)
+    path.write_text(json.dumps(guide, indent=1))
+    return guide
+
+
+def save_guide(name, guide, keep_status_from=None):
+    """Store a guide (e.g. the agent's researched one), keeping progress on steps with the same id."""
+    guide = validate_guide(guide)
+    old = {s["id"]: s for s in (keep_status_from or {}).get("steps", [])}
+    for st in guide["steps"]:
+        if st["id"] in old and old[st["id"]].get("status") in ("done", "verified", "skipped"):
+            st["status"] = old[st["id"]]["status"]
+    guide.setdefault("created", now_iso())
+    guide["tv"] = name
+    guide_path(name).write_text(json.dumps(guide, indent=1))
+    return guide
+
+
+def check_step(ctx, step):
+    """True/False when the step can be verified over ADB, None when only the owner can tell."""
+    chk = step.get("check")
+    if not chk:
+        return None
+    t = chk["type"]
+    if t == "adb":
+        return True
+    if t == "setting":
+        return ctx.dev.setting(chk["ns"], chk["key"]) == str(chk["equals"])
+    if t == "channels":
+        return live_tv_status(ctx.dev, ctx.presets, ctx.pkgs)["channels"] >= int(chk.get("min", 1))
+    if t == "accounts":
+        n = ctx.dev.sh("dumpsys account 2>/dev/null | grep -cE '^ *Account [{]'")
+        return int(n or 0) >= int(chk.get("min", 1))
+    if t == "package":
+        return ctx.enabled(chk["pkg"]) == bool(chk.get("enabled", True))
+    if t == "a11y":
+        return chk["component"] in ctx.dev.a11y_enabled()
+    return None
+
+
+def guide_step_action(ctx, step_id, what):
+    """verify | done | skip | reset | auto. Returns the updated guide."""
+    name = ctx.prof["tv"]["name"]
+    guide = load_guide(ctx)
+    step = next((s for s in guide["steps"] if s["id"] == step_id), None)
+    if not step:
+        raise TvError(f"no step {step_id}")
+    if what == "auto":
+        auto = step.get("auto")
+        if not auto or (auto.get("ns"), auto.get("key")) not in AUTO_SETTINGS:
+            raise TvError("this step can't be done by the app")
+        ctx.dev.sh(f"settings put {auto['ns']} {auto['key']} {shlex.quote(str(auto['value']))}")
+        what = "verify"
+    if what == "verify":
+        ok = check_step(ctx, step)
+        step["status"] = "verified" if ok else ("todo" if ok is False else step["status"])
+        step["checked"] = now_iso()
+        step["last_check"] = {True: "ok", False: "not yet", None: "can't be checked automatically"}[ok]
+    elif what in ("done", "skip", "reset"):
+        step["status"] = {"done": "done", "skip": "skipped", "reset": "todo"}[what]
+    else:
+        raise TvError(f"unknown step action {what}")
+    guide_path(name).write_text(json.dumps(guide, indent=1))
+    return guide
 
 
 # ---------------------------------------------------------------- state
@@ -1521,6 +1741,45 @@ def cmd_inventory(args):
     return EXIT_OK
 
 
+def cmd_discover(args):
+    ensure_ui()
+    ctx = ctx_for(args)
+    d = discover(ctx)
+    UiClient().send({"type": "prepare", "tv": d["tv"], "what": "dossier"})
+    def human():
+        print(f"{d['brand']} {d['model']} · Android {d['android']} · patch {d['security_patch']} · {d['soc']}")
+        print(f"{d['cpu_cores']} cores · {d['ram_mb']} MB RAM · {d['storage_free_gb']}/{d['storage_total_gb']} GB free · {d['display']}")
+        print(f"Play Store: {d['play_store']} ({d['google_accounts']} account(s)) · tuner: {bool(d['live_tv']['tuner_inputs'])} "
+              f"({d['live_tv']['channels']} channels) · remotes: {', '.join(d['remotes']) or '?'}")
+        for n in d["notes"]:
+            print(f"  {'⚠' if n['level'] == 'warn' else 'ℹ'} {n['text']}")
+        print(f"saved state/{d['tv']}/dossier.json")
+    emit(args, d, human)
+    return EXIT_OK
+
+
+def cmd_guide(args):
+    ctx = ctx_for(args)
+    name = ctx.prof["tv"]["name"]
+    if args.guide_cmd == "show":
+        guide = load_guide(ctx, rebuild=args.rebuild)
+    elif args.guide_cmd == "set":
+        new = json.loads(Path(args.file).read_text() if args.file != "-" else sys.stdin.read())
+        new.setdefault("source", "agent")
+        guide = save_guide(name, new, keep_status_from=json.loads(guide_path(name).read_text())
+                           if guide_path(name).exists() else None)
+        UiClient().send({"type": "prepare", "tv": name, "what": "guide"})
+    else:
+        guide = guide_step_action(ctx, args.step, args.guide_cmd)
+        UiClient().send({"type": "prepare", "tv": name, "what": "guide"})
+    def human():
+        print(f"{guide['source']} guide for {name} ({guide.get('created', '')}): {guide.get('summary', '')}")
+        for st in guide["steps"]:
+            print(f"  [{st['status']:<8}] {st['id']:<18} {st['title']}" + (f"  ({' › '.join(st['path'])})" if st.get("path") else ""))
+    emit(args, guide, human)
+    return EXIT_OK
+
+
 def cmd_screenshot(args):
     """Save what the TV shows. The agent reads the PNG to check the screen instead of asking the owner."""
     prof = load_profile(args.profile)
@@ -2134,6 +2393,8 @@ def init_tv(name, host, port=5555, force=False, wait=120):
     if not baseline.exists():
         take_snapshot(dev, prof, "baseline.json")
     ctx = Ctx(prof, dev)
+    dossier = discover(ctx)
+    load_guide(ctx, rebuild=True)
     counts = {}
     for pkg in pkgs:
         cls = ctx.classifier.classify(pkg)[0]
@@ -2141,6 +2402,7 @@ def init_tv(name, host, port=5555, force=False, wait=120):
             cls = "user"
         counts[cls] = counts.get(cls, 0) + 1
     return {"profile": str(path.relative_to(ROOT)), "name": name, "model": model, "presets": presets,
+            "notes": dossier["notes"],
             "package_classes": counts, "baseline": str(baseline.relative_to(ROOT))}
 
 
@@ -2214,6 +2476,22 @@ def main():
     p = add("status", cmd_status, "show TV state")
     p.add_argument("--reboot", action="store_true", help="reboot first and check the TV boots into the profile")
     add("snapshot", cmd_snapshot, "save the current package state")
+    add("discover", cmd_discover, "read everything about the TV into state/<tv>/dossier.json")
+    p = sub.add_parser("guide", help="preparation guide for this TV (walkthrough)")
+    gsub = p.add_subparsers(dest="guide_cmd", required=True)
+    for gname, ghelp in (("show", "show the guide (built from presets if missing)"), ("set", "store a guide from JSON"),
+                         ("verify", "check a step over ADB"), ("done", "mark a step done"), ("skip", "skip a step"),
+                         ("reset", "mark a step to do again"), ("auto", "let the app do a step (safe settings only)")):
+        gp = gsub.add_parser(gname, help=ghelp)
+        gp.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+        gp.add_argument("profile")
+        gp.set_defaults(fn=cmd_guide)
+        if gname == "show":
+            gp.add_argument("--rebuild", action="store_true", help="rebuild the built-in guide from the presets")
+        elif gname == "set":
+            gp.add_argument("file", help="guide JSON file, - for stdin (schema: prompts/prepare-tv.md)")
+        else:
+            gp.add_argument("step")
     p = add("screenshot", cmd_screenshot, "save a PNG of what the TV shows right now")
     p.add_argument("--out", help="file to write (default state/<tv>/screens/<time>.png)")
     p = add("ask", cmd_ask, "ask the owner in the dashboard and wait for the answer", profile=False)

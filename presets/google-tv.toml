@@ -37,3 +37,43 @@ packages = ["com.android.providers.tv", "com.google.android.tv"]  # TV provider 
 "com.google.android.tv" = "Live Channels (antenna/cable guide on some models)"
 "com.google.android.apps.tv.launcherx" = "Stock home (handled by [launcher], never disabled directly)"
 "com.google.android.tungsten.setupwraith" = "Setup wizard (handled by [launcher])"
+
+# ---- Preparation walkthrough (shown in the dashboard before the first run). Menu names vary by model;
+# the agent's research (prompts/prepare-tv.md) replaces these with model-specific steps.
+
+[[prepare]]
+id = "update"
+title = "Install system updates first"
+why = "Updates can switch removed apps back on. Update before we set things up, not after."
+path = ["Settings", "System", "About", "System update"]
+how = "Install any update, let the TV restart, then come back here."
+required = false
+
+[[prepare]]
+id = "account"
+only_if = "play_store"
+title = "Sign in to a Google account"
+why = "Needed to install apps from the Play Store (Projectivy, Kodi, Aerial Views…)."
+path = ["Settings", "Accounts & sign-in"]
+how = "Sign in with the owner's Google account. The app never sees the password."
+check = { type = "accounts", min = 1 }
+required = true
+
+[[prepare]]
+id = "privacy"
+title = "Turn off usage reports and ad personalisation"
+why = "Stops Google collecting usage data and personalising ads on this TV."
+path = ["Settings", "Privacy", "Usage & diagnostics"]
+how = "Switch Usage & diagnostics off. Then Settings › Privacy › Ads: delete the advertising ID or turn off personalisation."
+required = false
+
+[[prepare]]
+id = "cec"
+only_if = "hdmi"
+title = "HDMI-CEC: one remote for connected devices"
+why = "Lets the TV remote control a soundbar, console or set-top box connected over HDMI."
+path = ["Settings", "Channels & inputs", "Inputs", "HDMI control"]
+how = "Turn it on if something is connected over HDMI; leave it off otherwise."
+check = { type = "setting", ns = "global", key = "hdmi_control_enabled", equals = "1" }
+auto = { ns = "global", key = "hdmi_control_enabled", value = "1" }
+required = false

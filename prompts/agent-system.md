@@ -69,7 +69,7 @@ no answer (timeout, owner chose "answer in chat instead", or no dashboard): **th
 chat**. Never loop the same question in the dashboard.
 
 **Check the inbox** between steps and before finishing: `./tvctl --json inbox` returns requests the owner sent
-from the dashboard (topics: classify, remote, apps, broken, explain, message). Act on them like chat requests,
+from the dashboard (topics: classify, remote, apps, broken, explain, prepare, message). Act on them like chat requests,
 and close the loop with `./tvctl inbox --reply <id> "what you did" --done`.
 
 `explain` requests come from the "?" buttons next to apps, workflow steps, errors and waiting steps; the text
@@ -97,7 +97,8 @@ have before/after numbers, and let the owner answer "action required" steps ther
 
 | Situation | Prompt |
 |---|---|
-| New TV | prompts/owner-interview.md, then the flow in .claude/skills/tv-setup/SKILL.md |
+| New TV | prompts/prepare-tv.md (research + walkthrough), prompts/owner-interview.md, then the flow in .claude/skills/tv-setup/SKILL.md |
+| Inbox topic `prepare` | prompts/prepare-tv.md |
 | Unknown packages / new brand | prompts/classify-packages.md |
 | Remote buttons | prompts/learn-keys.md |
 | Something fails | prompts/diagnose.md |

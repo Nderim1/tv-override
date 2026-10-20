@@ -24,17 +24,21 @@ when you parse output. tvctl exit code 2 means the owner has to do something on 
    Developer options and USB debugging are on (Settings → System → About → click build 7×).
 2. **Connect + profile**: `./tvctl init <room>-<brand> --host <ip>`. Tell the owner to accept the ADB prompt on
    the TV. This writes `profiles/<name>.toml` and `state/<name>/baseline.json`.
-3. **New brand?** If no brand preset matched or `inventory --class unknown` is not empty, follow
+3. **Prepare**: `init` already read the TV (`state/<name>/dossier.json`) and built a guide from the presets.
+   Research the exact model and write a model-specific guide (`prompts/prepare-tv.md`, `./tvctl guide set`).
+   The owner walks through it in the dashboard ([P] prepare this TV); required steps should be done before
+   the first run. Check progress with `./tvctl --json guide show <name>`.
+4. **New brand?** If no brand preset matched or `inventory --class unknown` is not empty, follow
    `prompts/classify-packages.md` before going on.
-4. **Interview**: `prompts/owner-interview.md`, asked through `tvctl ask` in the dashboard. Fill in the profile.
-5. **Plan**: `./tvctl plan <name>`. Explain it to the owner in plain words; get a yes for any uninstall.
-6. **Apply loop**: `./tvctl --json apply <name> [--yes]`. For every `waiting_on_owner` item, tell the owner
+5. **Interview**: `prompts/owner-interview.md`, asked through `tvctl ask` in the dashboard. Fill in the profile.
+6. **Plan**: `./tvctl plan <name>`. Explain it to the owner in plain words; get a yes for any uninstall.
+7. **Apply loop**: `./tvctl --json apply <name> [--yes]`. For every `waiting_on_owner` item, tell the owner
    the exact step, wait for "done", re-run apply. Repeat until it exits 0.
-7. **Remote buttons**: `prompts/learn-keys.md`.
-8. **Verify**: `./tvctl status <name> --reboot`: home is the chosen launcher after boot, services running,
+8. **Remote buttons**: `prompts/learn-keys.md`.
+9. **Verify**: `./tvctl status <name> --reboot`: home is the chosen launcher after boot, services running,
    `pending_changes: 0`, `live_tv.player_enabled: true`. Ask the owner to try Home, Back, voice, the mapped
    buttons, an HDMI input and (if `live_tv.tuner_inputs` is not empty) a live channel opened from the launcher.
-9. **Wrap up**: summarise what changed, how much RAM was freed, and how to undo (`./tvctl restore`).
+10. **Wrap up**: summarise what changed, how much RAM was freed, and how to undo (`./tvctl restore`).
 
 ## Existing TV
 

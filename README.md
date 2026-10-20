@@ -51,7 +51,8 @@ On the TV: Settings → System → About → click "Build" 7× → Developer opt
 
 ```bash
 ./tvctl find                                   # find TVs on the network
-./tvctl init kitchen-sony --host 192.168.1.50  # accept the ADB prompt on the TV
+./tvctl init kitchen-sony --host 192.168.1.50  # accept the ADB prompt; reads all TV data + builds a prep guide
+./tvctl guide show kitchen-sony               # preparation walkthrough (also in the dashboard: [P])
 ./tvctl inventory kitchen-sony --class optional
 # edit profiles/kitchen-sony.toml with the owner (prompts/owner-interview.md)
 ./tvctl plan kitchen-sony

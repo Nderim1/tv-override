@@ -12,6 +12,7 @@ const S = {
   live: {}, measuring: false, opts: { reboot: true, track: true }, store: null, storeError: null,
   agent: { items: [], seen: null },
   keys: null, keysError: null, capture: { state: null, presses: [], until: 0 },
+  prep: { data: null, loading: false, error: null, open: null, show: null },
   screen: { live: false, interval: 2000, timer: null, busy: false, url: null, info: '', error: null, auto: false },
 };
 
@@ -104,6 +105,7 @@ function handleKeyEvent(ev) {
 function handleEvent(ev) {
   if (ev && ev.type === 'agent') return handleAgentEvent(ev);
   if (ev && (ev.type === 'keypress' || ev.type === 'keycapture')) return handleKeyEvent(ev);
+  if (ev && ev.type === 'prepare') { if (ev.tv === S.selected) loadPrep(false); return; }
   if (!ev || !ev.tv) return;
   const L = live(ev.tv);
   switch (ev.type) {
@@ -192,7 +194,7 @@ function connectEvents() {
   es.addEventListener('replayed', () => { replaying = false; renderFleet(); if (S.selected) renderLive(); });
   es.onmessage = (m) => {
     const ev = JSON.parse(m.data);
-    if (replaying && ['agent', 'keypress', 'keycapture'].includes(ev.type)) return;  // loaded via the API instead
+    if (replaying && ['agent', 'keypress', 'keycapture', 'prepare'].includes(ev.type)) return;  // loaded via the API instead
     if (replaying) {
       // rebuild quietly; render once at the end of the replay
       const sel = S.selected; S.selected = null; handleEvent(ev); S.selected = sel;
@@ -271,6 +273,7 @@ async function selectTv(name) {
   clearTimeout(S.screen.timer);
   if (S.screen.url) URL.revokeObjectURL(S.screen.url);
   Object.assign(S.screen, { live: false, url: null, info: '', error: null, auto: false, busy: false });
+  S.prep = { data: null, loading: false, error: null, open: null, show: null };
   location.hash = `tv=${name}`;
   renderFleet();
   $('#main').innerHTML = `<div class="panel"><span class="spin">◌</span> loading ${esc(name)}…</div>`;
@@ -279,6 +282,7 @@ async function selectTv(name) {
   } catch (e) { toast(e.message, true); return; }
   renderMain();
   renderAgent();
+  loadPrep();
   loadStore();
   loadApps();
   loadKeys();
@@ -334,6 +338,7 @@ function renderMain() {
   }
   $('#main').innerHTML = `
     <section class="panel" id="sec-head"></section>
+    <section class="panel" id="sec-prep"></section>
     <section class="panel" id="sec-screen"></section>
     <section id="sec-agent"></section>
     <section id="sec-alert"></section>
@@ -349,6 +354,7 @@ function renderMain() {
     <section class="panel" id="sec-history"></section>
     <section class="panel danger" id="sec-danger"></section>`;
   renderLive();
+  renderPrep();
   renderScreen();
   renderStore();
   renderApps();
@@ -746,6 +752,113 @@ function renderDanger() {
       <td style="text-align:right"><button class="btn btn-sm" data-action="open-play" data-pkg="${esc(p)}">OPEN IN PLAY STORE ON TV</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
 }
 
+/* ------------------------------------------------------------------ prepare: TV data + walkthrough */
+
+async function loadPrep(build = true) {
+  if (!S.selected) return;
+  const name = S.selected;
+  S.prep.loading = !S.prep.data; S.prep.error = null; renderPrep();
+  try {
+    const d = await api(`/api/tv/${name}/prepare${build && onlineOf(name) ? '' : '?build=0'}`);
+    if (name !== S.selected) return;
+    S.prep.data = d;
+  } catch (e) { S.prep.error = e.message; }
+  S.prep.loading = false;
+  renderPrep();
+}
+
+const DONE_STATES = ['done', 'verified', 'skipped'];
+function prepProgress(g) {
+  const steps = g?.steps || [];
+  const done = steps.filter((x) => DONE_STATES.includes(x.status)).length;
+  const reqLeft = steps.filter((x) => x.required && !['done', 'verified'].includes(x.status)).length;
+  return { done, total: steps.length, reqLeft };
+}
+
+function stepStatus(stt) {
+  return { verified: '<span class="st st-done">✓ verified</span>', done: '<span class="st st-done">✓ done</span>',
+    skipped: '<span class="st st-skipped">– skipped</span>', todo: '<span class="st st-pending">○ to do</span>' }[stt] || esc(stt);
+}
+
+function renderPrep() {
+  const el = $('#sec-prep');
+  if (!el) return;
+  const P = S.prep, d = P.data?.dossier, g = P.data?.guide;
+  const busy = busyState().running, on = onlineOf(S.selected);
+  const prog = prepProgress(g);
+  const ready = g && prog.reqLeft === 0 && prog.done === prog.total;
+  const show = P.show ?? !ready;
+  const research = g?.research;
+  const head = `<div class="panel-head"><h2 class="panel-title"><b>[P]</b>prepare this TV</h2>
+    <span class="row">${g ? `<span class="chip ${ready ? 'accent' : ''}">${ready ? '✓ prepared' : `${prog.done}/${prog.total} steps${prog.reqLeft ? ` · ${prog.reqLeft} required left` : ''}`}</span>` : ''}
+    <button class="btn btn-sm" data-action="prep-toggle">${show ? 'HIDE' : 'SHOW'}</button></span></div>`;
+  if (!show) { el.innerHTML = head; return; }
+  if (P.loading) { el.innerHTML = head + '<div class="empty"><span class="spin">◌</span> reading everything from the TV…</div>'; return; }
+  if (P.error && !d) { el.innerHTML = head + `<div class="empty">${esc(P.error)}</div>`; return; }
+  if (!d) { el.innerHTML = head + `<div class="empty">No TV data yet${on ? '' : ' (TV offline)'}.</div>`; return; }
+  const lt = d.live_tv || {};
+  const facts = [
+    ['TV', `${d.brand || ''} ${d.model || ''}`, d.props?.['ro.product.name']],
+    ['System', `Android ${d.android}`, `patch ${d.security_patch || '?'} · fw ${d.firmware || '?'}`],
+    ['Hardware', `${d.ram_mb} MB RAM · ${d.cpu_cores} cores`, `${d.soc || ''} · ${d.storage_free_gb}/${d.storage_total_gb} GB free`],
+    ['Display', d.display || '?', `${d.locale || ''} · ${d.timezone || ''}`],
+    ['Network', (d.network || []).map((n) => `${n.iface} ${n.ip}`).join(', ') || '?', `up ${d.uptime_h} h`],
+    ['Play Store', d.play_store ? `yes · v${(d.play_store_version || '').split(' ')[0]}` : 'no', `${d.google_accounts} Google account(s)`],
+    ['Live TV', lt.tuner_inputs?.length ? `tuner · ${lt.channels} channels` : 'no tuner', `${lt.external_inputs} external input(s)`],
+    ['Remote', (d.remotes || []).join(', ') || '?', ''],
+    ['Home screen', (d.home || '').split('/')[0], `${(d.launchers || []).length} launcher(s) installed`],
+    ['Packages', `${d.packages?.total} total`, Object.entries(d.packages?.classes || {}).map(([k, v]) => `${v} ${k}`).join(' · ')],
+    ['Presets', (d.presets || []).join(', '), `read ${ago(d.taken)}`],
+  ];
+  const steps = g?.steps || [];
+  const openId = P.open ?? steps.find((x) => !DONE_STATES.includes(x.status))?.id;
+  const stepHtml = (x, i) => {
+    const open = x.id === openId;
+    return `<div class="prep-step ${open ? 'open' : ''} ${DONE_STATES.includes(x.status) ? 'is-done' : ''}">
+      <button class="prep-row" data-action="prep-open" data-step="${esc(x.id)}" aria-expanded="${open}">
+        <span class="n">${String(i + 1).padStart(2, '0')}</span><span class="t">${esc(x.title)}</span>
+        ${x.required ? '<span class="chip">required</span>' : ''}<span class="sp"></span>${stepStatus(x.status)}</button>
+      ${open ? `<div class="prep-body">
+        ${x.why ? `<div class="body">${esc(x.why)}</div>` : ''}
+        ${x.path?.length ? `<div class="crumbs">${x.path.map((c) => `<span>${esc(c)}</span>`).join('<i>›</i>')}</div>` : ''}
+        ${x.how ? `<div class="how">${esc(x.how)}</div>` : ''}
+        ${x.source ? `<div class="hint">source: ${/^https?:/.test(x.source) ? `<a href="${esc(x.source)}" target="_blank" rel="noopener">${esc(x.source)}</a>` : esc(x.source)}</div>` : ''}
+        ${x.last_check ? `<div class="hint">last check: ${esc(x.last_check)} (${esc(ago(x.checked))})</div>` : ''}
+        <div class="row" style="margin-top:10px">
+          ${x.check ? `<button class="btn btn-sm btn-cyan" data-action="prep-step" data-op="verify" data-step="${esc(x.id)}" ${on ? '' : 'disabled'}>✓ VERIFY ON TV</button>` : ''}
+          ${x.auto ? `<button class="btn btn-sm btn-primary" data-action="prep-step" data-op="auto" data-step="${esc(x.id)}" ${on ? '' : 'disabled'}>LET THE APP DO IT</button>` : ''}
+          ${x.status === 'todo' ? `<button class="btn btn-sm" data-action="prep-step" data-op="done" data-step="${esc(x.id)}">I DID IT</button>
+            <button class="btn btn-sm btn-ghost" data-action="prep-step" data-op="skip" data-step="${esc(x.id)}">SKIP</button>`
+            : `<button class="btn btn-sm btn-ghost" data-action="prep-step" data-op="reset" data-step="${esc(x.id)}">MARK TO DO</button>`}
+          ${explainBtn(`Preparation step "${x.title}" on ${S.selected} (${d.brand} ${d.model}): ${x.why || ''} Menu: ${(x.path || []).join(' > ')}. ${x.how || ''} Explain it and tell me exactly what to press.`)}
+        </div></div>` : ''}
+    </div>`;
+  };
+  el.innerHTML = head + `
+    <div class="facts">${facts.map(([k, v, sub]) => `<div class="fact"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>${sub ? `<div class="hint">${esc(sub)}</div>` : ''}</div>`).join('')}</div>
+    ${(d.notes || []).length ? `<ul class="notes">${d.notes.map((n) => `<li class="${n.level}">${n.level === 'warn' ? '⚠' : 'ℹ'} ${esc(n.text)}</li>`).join('')}</ul>` : ''}
+    <div class="row" style="justify-content:space-between;margin:14px 0 8px">
+      <div><b>Preparation guide</b> <span class="chip ${g?.source === 'agent' ? 'accent' : ''}">${g?.source === 'agent' ? '◆ researched by the agent' : 'built-in'}</span>
+        <div class="hint">${esc(g?.summary || '')}${research && g?.source !== 'agent' ? ` · research requested ${esc(ago(research.requested))}, waiting for the agent` : ''}</div></div>
+      <span class="row">
+        <button class="btn btn-sm btn-cyan" data-action="prep-research" ${on && !busy ? '' : 'disabled'} title="The agent researches this exact model and writes model-specific steps">◆ RESEARCH THIS MODEL</button>
+        <button class="btn btn-sm" data-action="prep-discover" ${on && !busy ? '' : 'disabled'}>↻ RE-READ TV DATA</button>
+        <button class="btn btn-sm btn-ghost" data-action="prep-rebuild" ${on && !busy ? '' : 'disabled'} title="Back to the built-in steps from the presets">BUILT-IN STEPS</button>
+      </span></div>
+    <div class="prep-bar"><i style="width:${prog.total ? Math.round(100 * prog.done / prog.total) : 0}%"></i></div>
+    <div class="prep-steps">${steps.map(stepHtml).join('')}</div>
+    <div class="hint" style="margin-top:8px">Steps marked required should be done before RUN WORKFLOW. The live screen below shows where you are on the TV.</div>`;
+}
+
+async function prepStep(op, id) {
+  const g = await post(`/api/tv/${S.selected}/guide/${id}/${op}`);
+  S.prep.data.guide = g;
+  const st = g.steps.find((x) => x.id === id);
+  if (op === 'verify' || op === 'auto') toast(st.status === 'verified' ? '✓ verified on the TV' : `not done yet (${st.last_check})`, st.status !== 'verified');
+  if (DONE_STATES.includes(st.status)) S.prep.open = g.steps.find((x) => !DONE_STATES.includes(x.status))?.id ?? null;
+  renderPrep();
+}
+
 /* ------------------------------------------------------------------ live screen */
 
 function renderScreen() {
@@ -1127,6 +1240,7 @@ function runPicker() {
     <div class="steps-pick">${Object.entries(M.steps).map(([id, desc]) => `<label class="step-pick">
       <input type="checkbox" data-step="${id}" ${chosen.has(id) ? 'checked' : ''} ${id === 'buttons' && !keys ? 'disabled' : ''}>
       <span><b>${STEP_TITLES[id] || id}</b> <span class="hint">${esc(desc)}</span><div class="step-detail">${detail[id]}</div></span></label>`).join('')}</div>
+    ${prepProgress(S.prep.data?.guide).reqLeft ? `<div class="alert" style="animation:none;padding:8px 12px;margin-top:10px"><span class="st st-manual">⚠ ${prepProgress(S.prep.data?.guide).reqLeft} required preparation step(s) not done yet</span> <span class="hint">(see [P] prepare this TV)</span></div>` : ''}
     <div class="hint" style="margin-top:8px">Live TV and HDMI inputs are always protected, and every run can be undone from the run history.</div>
     <label class="check" style="margin-top:10px"><input type="checkbox" id="pick-reboot" ${S.opts.reboot ? 'checked' : ''}> reboot after changes for an accurate after-measurement</label>
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" data-action="modal-close">CANCEL</button>
@@ -1203,6 +1317,19 @@ document.addEventListener('click', async (e) => {
     } else if (a === 'back-live') { S.viewRun = null; renderLive(); }
     else if (a === 'restore') restoreModal();
     else if (a === 'run-picker') runPicker();
+    else if (a === 'prep-toggle') { const g = S.prep.data?.guide; const p = prepProgress(g); S.prep.show = !(S.prep.show ?? !(g && p.reqLeft === 0 && p.done === p.total)); renderPrep(); }
+    else if (a === 'prep-open') {
+      S.prep.open = S.prep.open === t.dataset.step ? '' : t.dataset.step; renderPrep();
+      if (S.prep.open && !S.screen.live && onlineOf(S.selected)) setLive(true);  // follow along on the live screen
+    } else if (a === 'prep-step') await prepStep(t.dataset.op, t.dataset.step);
+    else if (a === 'prep-discover') { S.prep.loading = true; renderPrep(); await post(`/api/tv/${S.selected}/discover`); await loadPrep(false); toast('TV data refreshed'); }
+    else if (a === 'prep-rebuild') { if (confirm('Replace the guide with the built-in steps from the presets? Progress on matching steps is lost.')) { await post(`/api/tv/${S.selected}/guide/rebuild`); await loadPrep(false); } }
+    else if (a === 'prep-research') {
+      await post(`/api/tv/${S.selected}/guide/research`);
+      const online = S.agent.seen && Date.now() - new Date(S.agent.seen) < 90000;
+      toast(online ? 'the agent is researching this model; the guide updates here when it is done' : 'queued for the agent: it researches when it next checks in (or ask it in the chat)');
+      loadPrep(false);
+    }
     else if (a === 'screen-live') setLive(!S.screen.live);
     else if (a === 'screen-now') screenTick(true);
     else if (a === 'screen-size') { S.screen.big = !S.screen.big; $('.screen-wrap')?.classList.toggle('big', S.screen.big); }

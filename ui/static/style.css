@@ -343,3 +343,29 @@ textarea.ta { width: 100%; min-height: 80px; background: var(--surface-2); borde
 .screen-badge { position: absolute; top: 8px; left: 8px; font-size: 10px; letter-spacing: .14em; color: var(--text); background: #000a; padding: 2px 7px; border-radius: 3px; }
 .screen-badge:empty { display: none; }
 .screen-msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; pointer-events: none; }
+
+/* ---------- prepare ---------- */
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.fact { border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; background: var(--surface-2); min-width: 0; }
+.fact .k { font-size: 10px; letter-spacing: .14em; color: var(--muted); text-transform: uppercase; }
+.fact .v { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fact .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notes { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 4px; }
+.notes li { font-size: 12px; padding: 4px 8px; border-left: 2px solid var(--cyan); background: #46c8e00a; }
+.notes li.warn { border-color: var(--warning); background: #fab2190a; }
+.prep-bar { height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; margin-bottom: 10px; }
+.prep-bar i { display: block; height: 100%; background: var(--accent); box-shadow: 0 0 8px var(--accent); transition: width .3s; }
+.prep-steps { display: grid; gap: 6px; }
+.prep-step { border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2); }
+.prep-step.open { border-color: var(--cyan); box-shadow: 0 0 0 1px #46c8e022; }
+.prep-step.is-done .t { color: var(--text-2); }
+.prep-row { display: flex; align-items: center; gap: 10px; width: 100%; background: none; border: 0; padding: 10px 12px; cursor: pointer; text-align: left; color: inherit; }
+.prep-row .n { color: var(--muted); font-size: 10px; letter-spacing: .1em; }
+.prep-row .t { font-weight: 700; }
+.prep-row .sp { flex: 1; }
+.prep-body { padding: 0 12px 12px 36px; }
+.prep-body .body { color: var(--text-2); }
+.crumbs { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; }
+.crumbs span { border: 1px solid var(--border-strong); border-radius: 3px; padding: 2px 7px; background: var(--surface); }
+.crumbs i { color: var(--muted); font-style: normal; }
+.how { white-space: pre-wrap; margin-top: 4px; }
