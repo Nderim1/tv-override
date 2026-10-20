@@ -9,7 +9,7 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const S = {
   tvs: [], selected: null, detail: null, lastRecord: null, viewRun: null,
   apps: null, appsLoading: false, appsError: null, appsFilter: 'all', appsQuery: '', appsMem: false,
-  live: {}, measuring: false, opts: { reboot: true },
+  live: {}, measuring: false, opts: { reboot: true, track: true }, store: null, storeError: null,
   agent: { items: [], seen: null },
   keys: null, keysError: null, capture: { state: null, presses: [], until: 0 },
 };
@@ -108,7 +108,7 @@ function handleEvent(ev) {
   switch (ev.type) {
     case 'run':
       if (ev.status === 'running') {
-        Object.assign(L, { run: ev.run, mode: ev.mode, source: ev.source || 'ui', state: 'running', phases: {}, rounds: [], perf: {}, waiting: null, record: null });
+        Object.assign(L, { run: ev.run, mode: ev.mode, steps: ev.steps, source: ev.source || 'ui', state: 'running', phases: {}, rounds: [], perf: {}, waiting: null, record: null });
         logLine(L, ev, `▶ RUN ${ev.run} · ${ev.mode} · from ${ev.source === 'cli' ? 'terminal' : 'dashboard'}`, 'phase');
       } else {
         L.state = ev.status;
@@ -178,7 +178,7 @@ function scheduleRefresh(tv) {
     if (tv === S.selected) {
       await loadDetail(tv);
       renderLive(); renderHistory(); renderDanger();
-      loadApps();
+      loadStore(); loadApps(); loadKeys();
     }
   }, 600);
 }
@@ -238,6 +238,18 @@ async function loadApps(mem = S.appsMem) {
   renderApps();
 }
 
+async function loadStore() {
+  if (!S.selected) return;
+  if (!onlineOf(S.selected)) { S.store = null; S.storeError = 'TV offline'; renderStore(); return; }
+  S.storeError = null;
+  try {
+    const name = S.selected;
+    const d = await api(`/api/tv/${name}/store`);
+    if (name === S.selected) S.store = d;
+  } catch (e) { S.storeError = e.message; }
+  renderStore();
+}
+
 async function loadKeys() {
   if (!S.selected) return;
   if (!onlineOf(S.selected)) { S.keys = null; S.keysError = 'TV offline'; renderKeys(); return; }
@@ -253,7 +265,7 @@ async function loadKeys() {
 const onlineOf = (name) => S.tvs.find((t) => t.name === name)?.online;
 
 async function selectTv(name) {
-  S.selected = name; S.viewRun = null; S.apps = null; S.appsError = null; S.keys = null;
+  S.selected = name; S.viewRun = null; S.apps = null; S.appsError = null; S.keys = null; S.store = null;
   S.capture = { state: null, presses: [], until: 0 };
   location.hash = `tv=${name}`;
   renderFleet();
@@ -263,6 +275,7 @@ async function selectTv(name) {
   } catch (e) { toast(e.message, true); return; }
   renderMain();
   renderAgent();
+  loadStore();
   loadApps();
   loadKeys();
 }
@@ -322,13 +335,15 @@ function renderMain() {
     <section class="panel" id="sec-pipeline"></section>
     <section class="panel" id="sec-keys"></section>
     <section class="panel" id="sec-console">
-      <div class="panel-head"><h2 class="panel-title"><b>[05]</b>console</h2><span class="hint">live workflow log</span></div>
+      <div class="panel-head"><h2 class="panel-title"><b>[06]</b>console</h2><span class="hint">live workflow log</span></div>
       <div class="console" id="console" aria-live="polite"></div>
     </section>
+    <section class="panel" id="sec-store"></section>
     <section class="panel" id="sec-apps"></section>
     <section class="panel" id="sec-history"></section>
     <section class="panel danger" id="sec-danger"></section>`;
   renderLive();
+  renderStore();
   renderApps();
   renderKeys();
   renderHistory();
@@ -372,13 +387,11 @@ function renderHead() {
       </div>
       <div class="controls">
         <div class="row">
-          <button class="btn btn-primary" data-action="run" data-mode="apply" ${dis}>▶ RUN WORKFLOW</button>
-          <button class="btn" data-action="run" data-mode="plan" ${dis}>PLAN</button>
+          <button class="btn btn-primary" data-action="run-picker" ${dis}>▶ RUN WORKFLOW…</button>
           <button class="btn" data-action="measure" ${dis || (S.measuring ? 'disabled' : '')}>${S.measuring ? '<span class="spin">◌</span> MEASURING' : 'MEASURE'}</button>
           <button class="btn" data-action="run" data-mode="verify" ${dis}>REBOOT &amp; VERIFY</button>
           ${running && !cli ? '<button class="btn btn-danger" data-action="stop">■ STOP</button>' : ''}
         </div>
-        <label class="check"><input type="checkbox" data-opt="reboot" ${S.opts.reboot ? 'checked' : ''}> reboot after changes (accurate after-measurement)</label>
         ${!on ? '<span class="hint">TV unreachable: is it on, and is USB debugging enabled?</span>' : ''}
       </div>
     </div>
@@ -561,17 +574,18 @@ const PHASES = {
   verify: ['connect', 'measure-before', 'reboot', 'measure-after', 'verify'],
   restore: ['connect', 'measure-before', 'restore', 'measure-after', 'verify'],
   revert: ['connect', 'measure-before', 'revert', 'measure-after', 'verify'],
+  app: ['connect', 'app', 'verify'],
 };
-const PHASE_LABEL = { connect: 'connect', 'measure-before': 'measure ▸ before', apply: 'apply', plan: 'plan', reboot: 'reboot', 'measure-after': 'measure ▸ after', verify: 'verify', restore: 'restore', revert: 'revert' };
+const PHASE_LABEL = { connect: 'connect', 'measure-before': 'measure ▸ before', apply: 'apply', plan: 'plan', reboot: 'reboot', 'measure-after': 'measure ▸ after', verify: 'verify', restore: 'restore', revert: 'revert', app: 'install / uninstall' };
 
 function pipelineSource() {
   if (S.viewRun) {
     const r = S.viewRun;
     const phases = Object.fromEntries((r.phases || []).map((p) => [p.name, p]));
-    return { mode: r.mode, phases, rounds: r.rounds || [], state: r.outcome, run: r.id, source: r.source, historic: true };
+    return { mode: r.mode, phases, rounds: r.rounds || [], state: r.outcome, run: r.id, source: r.source, steps: r.steps, historic: true };
   }
   const L = S.live[S.selected];
-  if (L && L.run) return { mode: L.mode, phases: L.phases, rounds: L.rounds, state: L.state, run: L.run, source: L.source };
+  if (L && L.run) return { mode: L.mode, phases: L.phases, rounds: L.rounds, state: L.state, run: L.run, source: L.source, steps: L.steps };
   return null;
 }
 
@@ -582,7 +596,7 @@ function renderPipeline() {
     <span class="row">${src ? `<span class="hint">${src.historic ? 'viewing' : 'live'} run ${esc(src.run)} · ${esc(src.mode)} · ${src.source === 'cli' ? 'terminal' : 'dashboard'}</span> ${st(src.state === 'running' ? 'running' : src.state)}` : ''}
     ${src?.historic ? '<button class="btn btn-sm" data-action="back-live">BACK TO LIVE</button>' : ''}</span></div>`;
   if (!src) {
-    el.innerHTML = head + `<div class="empty">No run in this session. RUN WORKFLOW measures the TV, plans, applies the profile step by step, pauses when it needs you, then re-measures. PLAN is a dry run.</div>`;
+    el.innerHTML = head + `<div class="empty">No run in this session. RUN WORKFLOW lets you pick the steps (full revamp, apps only, cleanup, home screen…), then measures, applies step by step, pauses when it needs you and re-measures. PREVIEW is a dry run.</div>`;
     return;
   }
   const order = PHASES[src.mode] || Object.keys(src.phases);
@@ -591,7 +605,7 @@ function renderPipeline() {
   const steps = order.map((name, i) => {
     let p = src.phases[name];
     let status = p ? p.status : (src.state === 'running' ? 'pending' : 'skipped');
-    if (status === 'running' && waitingNow && ['apply', 'restore', 'revert'].includes(name)) status = 'waiting';
+    if (status === 'running' && waitingNow && ['apply', 'restore', 'revert', 'app'].includes(name)) status = 'waiting';
     return `<div class="step ${status}"><div class="n">${String(i + 1).padStart(2, '0')}</div><div class="t">${esc(PHASE_LABEL[name] || name)}</div>
       <div class="s">${st(status)}${status === 'error' ? ' ' + explainBtn(`The "${name}" phase of a ${src.mode} run on ${S.selected} failed: ${p?.detail || 'no detail'}. What went wrong and what should I do?`) : ''}</div>${p?.detail ? `<div class="hint">${esc(p.detail)}</div>` : ''}</div>`;
   }).join('');
@@ -606,7 +620,9 @@ function renderPipeline() {
       ${shown.map((a) => `<tr><td>${st(a.status)}</td><td>${esc(a.step)}</td><td>${esc(a.action)}</td><td class="pkg-name">${esc(a.target)}</td><td class="pkg-note">${esc(a.detail)} ${explainBtn(`Explain this workflow step on ${S.selected}: [${a.status}] ${a.step} · ${a.action} · ${a.target} · ${a.detail}. Why does it happen, and do I need to do anything?`)}</td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">✓ nothing to change: the TV matches the profile</div>'}</div>`;
   }).join('') : '<div class="empty">Waiting for the plan…</div>';
-  el.innerHTML = head + `<div class="stepper">${steps}</div><div class="rounds">${body}</div>`;
+  const chosen = src.steps && src.steps.length < Object.keys(S.meta?.steps || {}).length
+    ? `<div class="chips" style="margin:-6px 0 12px">${src.steps.map((x) => `<span class="chip accent">${esc(x)}</span>`).join('')}<span class="hint">steps in this run</span></div>` : '';
+  el.innerHTML = head + chosen + `<div class="stepper">${steps}</div><div class="rounds">${body}</div>`;
 }
 
 /* ------------------------------------------------------------------ console */
@@ -654,7 +670,7 @@ function decisionCell(r) {
 function renderApps() {
   const el = $('#sec-apps');
   if (!el) return;
-  const head = `<div class="panel-head"><h2 class="panel-title"><b>[03]</b>apps · keep / remove</h2>
+  const head = `<div class="panel-head"><h2 class="panel-title"><b>[04]</b>all packages · keep / remove</h2>
     <span class="row"><button class="btn btn-sm" data-action="apps-reload" ${S.appsLoading ? 'disabled' : ''}>${S.appsLoading ? '<span class="spin">◌</span> loading' : '↻ RELOAD'}</button>
     <button class="btn btn-sm" data-action="apps-mem" ${S.appsLoading ? 'disabled' : ''}>MEASURE RAM PER APP</button></span></div>`;
   if (S.appsError && !S.apps) { el.innerHTML = head + `<div class="empty">${esc(S.appsError)}</div>`; return; }
@@ -687,7 +703,7 @@ function renderHistory() {
   const el = $('#sec-history');
   if (!el) return;
   const runs = S.detail.runs;
-  el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[06]</b>run history</h2><span class="hint">${runs.length} run(s) · click to inspect</span></div>
+  el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[07]</b>run history</h2><span class="hint">${runs.length} run(s) · click to inspect</span></div>
     ${runs.length ? `<div class="table-wrap" style="max-height:320px"><table class="t"><thead><tr><th>when</th><th>mode</th><th>from</th><th>outcome</th><th>changes</th><th>RAM before → after</th><th></th></tr></thead><tbody>
     ${runs.map((r) => {
       const d = r.mem_before != null && r.mem_after != null ? r.mem_after - r.mem_before : null;
@@ -706,7 +722,7 @@ function renderDanger() {
   if (!el) return;
   const restore = S.detail.runs.find((r) => r.mode === 'restore');
   const reinstall = restore?.summary?.reinstall || [];
-  el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[07]</b>danger zone</h2></div>
+  el.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[08]</b>danger zone</h2></div>
     <div class="row" style="justify-content:space-between;align-items:flex-start">
       <div style="max-width:620px">
         <div style="font-weight:700">Restore this TV to its defaults</div>
@@ -718,6 +734,68 @@ function renderDanger() {
     ${reinstall.length ? `<div style="margin-top:14px"><div class="hint">Uninstalled since the baseline (from the last restore):</div>
       <div class="table-wrap" style="max-height:220px;margin-top:6px"><table class="t"><tbody>${reinstall.map((p) => `<tr><td class="pkg-name">${esc(p)}</td>
       <td style="text-align:right"><button class="btn btn-sm" data-action="open-play" data-pkg="${esc(p)}">OPEN IN PLAY STORE ON TV</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+}
+
+/* ------------------------------------------------------------------ app store */
+
+function renderStore() {
+  const el = $('#sec-store');
+  if (!el) return;
+  const St = S.store, busy = busyState().running;
+  const head = `<div class="panel-head"><h2 class="panel-title"><b>[03]</b>app store · install / uninstall single apps</h2>
+    <span class="row"><label class="check" title="Installed apps are added to the profile, so every later run keeps them; uninstalled ones are removed from it">
+      <input type="checkbox" data-opt="track" ${S.opts.track ? 'checked' : ''}> keep the profile in sync</label>
+    <button class="btn btn-sm" data-action="store-reload">↻</button></span></div>`;
+  if (S.storeError && !St) { el.innerHTML = head + `<div class="empty">${esc(S.storeError)}</div>`; return; }
+  if (!St) { el.innerHTML = head + '<div class="empty"><span class="spin">◌</span> checking which apps are on the TV…</div>'; return; }
+  const dis = busy ? 'disabled' : '';
+  const card = (a) => {
+    const update = a.installed && a.source === 'apk' && a.catalog_version && a.version && a.version !== a.catalog_version;
+    return `<div class="store-card ${a.installed ? 'is-installed' : ''}">
+      <div class="row" style="justify-content:space-between"><b>${esc(a.name)}</b>
+        <span class="chip ${a.source === 'apk' ? 'accent' : ''}">${a.source === 'apk' ? '✓ verified APK' : 'Play Store'}</span></div>
+      <div class="pkg-note">${esc(a.package)}</div>
+      ${a.note ? `<div class="hint" style="margin-top:4px">${esc(a.note)}</div>` : ''}
+      <div class="store-status">${a.installed ? `${st('done')} installed${a.version ? ` · v${esc(a.version)}` : ''}${a.enabled ? '' : ' · <span class="st st-manual">switched off</span>'}`
+        : '<span class="st st-pending">○ not installed</span>'}${a.catalog_version ? ` <span class="hint">· catalog v${esc(a.catalog_version)}</span>` : ''}</div>
+      <div class="chips">${a.in_profile ? '<span class="chip">in profile</span>' : ''}${a.roles.map((r) => `<span class="chip accent">${esc(r)}</span>`).join('')}
+        ${a.needs_a11y ? '<span class="chip">needs accessibility switch</span>' : ''}</div>
+      <div class="row" style="margin-top:10px">
+        ${a.blocked && !a.installed ? '<span class="hint">no Play Store on this TV: needs a verified APK</span>' : ''}
+        ${!a.installed && !a.blocked ? `<button class="btn btn-sm btn-primary" data-action="store-install" data-app="${esc(a.id)}" ${dis}>INSTALL</button>` : ''}
+        ${update ? `<button class="btn btn-sm btn-cyan" data-action="store-update" data-app="${esc(a.id)}" ${dis}>UPDATE → v${esc(a.catalog_version)}</button>` : ''}
+        ${a.installed ? `<button class="btn btn-sm" data-action="store-open" data-pkg="${esc(a.package)}">▶ OPEN</button>` : ''}
+        ${a.installed && !a.roles.length ? `<button class="btn btn-sm btn-danger" data-action="store-uninstall" data-app="${esc(a.id)}" data-name="${esc(a.name)}" ${dis}>UNINSTALL</button>` : ''}
+        ${a.installed && a.roles.length ? `<span class="lock" title="Change the profile's ${esc(a.roles.join(' / '))} first">🔒 in use</span>` : ''}
+        ${explainBtn(`Explain the app ${a.name} (${a.package}) for ${S.selected}: what is it good for, and should I install it?`)}
+      </div></div>`;
+  };
+  el.innerHTML = head + `
+    <div class="hint" style="margin-bottom:10px">Installs one app on its own: no debloat and no launcher change needed.
+      This TV's profile: debloat ${St.debloat ? '<b>on</b>' : '<b>off</b> (apps only)'} · home screen <b>${esc(St.launcher || 'stock')}</b>.</div>
+    <div class="store-grid">${St.apps.map(card).join('')}</div>
+    ${St.others.length ? `<div class="chart-title" style="margin-top:16px">Other apps installed on this TV</div>
+    <div class="table-wrap" style="max-height:260px"><table class="t"><tbody>${St.others.map((o) => `<tr>
+      <td><div class="pkg-name">${esc(o.package)} ${explainBtn(`Explain the app ${o.package} on ${S.selected}: what is it, and is it safe to uninstall?`)}</div>${o.note ? `<div class="pkg-note">${esc(o.note)}</div>` : ''}</td>
+      <td style="text-align:right;white-space:nowrap"><button class="btn btn-sm" data-action="store-open" data-pkg="${esc(o.package)}">▶ OPEN</button>
+      <button class="btn btn-sm btn-danger" data-action="store-uninstall" data-app="${esc(o.package)}" data-name="${esc(o.package)}" ${dis}>UNINSTALL</button></td></tr>`).join('')}
+    </tbody></table></div>` : ''}
+    <div class="hint" style="margin-top:8px">Want an app that is not listed? Ask the agent to add it to the catalog (it verifies the APK against the official release first).</div>`;
+}
+
+async function appRun(appAction, appId) {
+  await post(`/api/tv/${S.selected}/run`, { mode: 'app', app_action: appAction, app: appId, track: S.opts.track });
+  S.viewRun = null;
+  toast(`${appAction} started – follow it in the workflow panel`);
+  await loadState(); renderLive(); renderStore();
+}
+
+function uninstallModal(app, name) {
+  modal(`<h2>Uninstall ${esc(name)}?</h2>
+    <p>This deletes the app and its data (logins, settings) from ${esc(S.selected)}. Preinstalled apps can't be deleted; they are switched off instead (reversible).</p>
+    <p class="hint">${S.opts.track ? 'It is also removed from the profile, so later runs do not reinstall it.' : 'The profile is left as it is.'} You can undo this run from the run history (APK apps are reinstalled automatically, Play Store apps need a reinstall).</p>
+    <div class="row" style="justify-content:flex-end"><button class="btn" data-action="modal-close">CANCEL</button>
+    <button class="btn btn-danger" data-action="store-uninstall-go" data-app="${esc(app)}">UNINSTALL</button></div>`);
 }
 
 /* ------------------------------------------------------------------ remote buttons */
@@ -733,7 +811,7 @@ function renderKeys() {
   if (!el) return;
   const K = S.keys, C = S.capture;
   const listening = C.state === 'listening';
-  const head = `<div class="panel-head"><h2 class="panel-title"><b>[04]</b>remote buttons</h2>
+  const head = `<div class="panel-head"><h2 class="panel-title"><b>[05]</b>remote buttons</h2>
     <span class="row"><button class="btn btn-sm btn-cyan" data-action="keys-learn" ${listening || !K ? 'disabled' : ''}>${listening ? '<span class="spin">◌</span> LISTENING' : '+ LEARN A BUTTON'}</button>
     <button class="btn btn-sm" data-action="keys-reload">↻</button></span></div>`;
   if (S.keysError && !K) { el.innerHTML = head + `<div class="empty">${esc(S.keysError)}</div>`; return; }
@@ -937,6 +1015,70 @@ function addTvModal(found = null, scanning = false, nets = []) {
 
 /* ------------------------------------------------------------------ actions */
 
+const STEP_TITLES = { apps: 'Apps', debloat: 'Debloat', home: 'Home screen', screensaver: 'Screensaver', tweaks: 'Speed tweaks', buttons: 'Remote buttons' };
+const RECIPE_TITLES = { full: 'FULL REVAMP', 'apps-only': 'APPS ONLY', cleanup: 'CLEANUP ONLY', 'home-screen': 'HOME SCREEN ONLY' };
+
+function lastRecipe() { try { return localStorage.getItem(`recipe:${S.selected}`) || 'full'; } catch { return 'full'; } }
+function saveRecipe(r) { try { localStorage.setItem(`recipe:${S.selected}`, r); } catch { /* private mode */ } }
+
+function runPicker() {
+  const M = S.meta, prof = S.detail.profile, home = prof.home || {}, apps = prof.apps || {};
+  const recipe = lastRecipe(), chosen = new Set(M.recipes[recipe] || M.recipes.full);
+  const keys = Object.keys(prof.keys || {}).length;
+  const installs = (apps.install || []).length;
+  const sel = (id, opts, cur) => `<select class="decision" id="${id}" style="padding:5px 8px">${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(cur ?? '') === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  const detail = {
+    apps: `${installs} app(s) in the profile: ${esc((apps.install || []).join(', ') || 'none')}. Other apps you installed: ${apps.user_apps === 'remove-others' ? '<b>removed</b> (asks first)' : 'left alone'}.`,
+    debloat: apps.debloat === false ? 'This profile is <b>apps only</b>: only your own disable list is applied, preset bloat is left on.'
+      : `Disables bloat and tracking from the presets plus ${(apps.disable || []).length} package(s) on your disable list. Reversible.`,
+    home: `${sel('pick-launcher', [['', '— leave the home screen alone —'], ['stock', "The TV's own home screen"], ...M.launchers.map((l) => [l.id, l.name])], home.launcher)}
+      <div class="hint" id="home-hint"></div>`,
+    screensaver: sel('pick-screensaver', [['', '— leave as it is —'], ...M.screensavers.map((x) => [x.id, x.name])], home.screensaver),
+    tweaks: sel('pick-anim', [['', '— leave as it is —'], ['0.5', 'Snappy (0.5×)'], ['1', 'Normal (1×)'], ['0', 'Off (0×)']], home.animation_scale ?? ''),
+    buttons: keys ? `${keys} button(s) mapped. Installs Remote Remap if needed and pushes the map.` : 'No buttons mapped yet: map them in [05] remote buttons first.',
+  };
+  modal(`<h2>▶ Run workflow on ${esc(S.selected)}</h2>
+    <div class="row" style="margin:8px 0 12px">${Object.keys(M.recipes).map((r) => `<button class="tab" data-action="recipe" data-recipe="${r}" aria-selected="${r === recipe}">${RECIPE_TITLES[r] || r}</button>`).join('')}
+      <span class="hint">or tick the steps you want</span></div>
+    <div class="steps-pick">${Object.entries(M.steps).map(([id, desc]) => `<label class="step-pick">
+      <input type="checkbox" data-step="${id}" ${chosen.has(id) ? 'checked' : ''} ${id === 'buttons' && !keys ? 'disabled' : ''}>
+      <span><b>${STEP_TITLES[id] || id}</b> <span class="hint">${esc(desc)}</span><div class="step-detail">${detail[id]}</div></span></label>`).join('')}</div>
+    <div class="hint" style="margin-top:8px">Live TV and HDMI inputs are always protected, and every run can be undone from the run history.</div>
+    <label class="check" style="margin-top:10px"><input type="checkbox" id="pick-reboot" ${S.opts.reboot ? 'checked' : ''}> reboot after changes for an accurate after-measurement</label>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" data-action="modal-close">CANCEL</button>
+      <button class="btn" data-action="picker-go" data-mode="plan">PREVIEW</button>
+      <button class="btn btn-primary" data-action="picker-go" data-mode="apply">▶ RUN</button></div>`);
+  updateHomeHint();
+}
+
+function updateHomeHint() {
+  const v = $('#pick-launcher')?.value, el = $('#home-hint');
+  if (!el) return;
+  el.textContent = !v ? 'The home step does nothing until you pick one.'
+    : v === 'stock' ? 'Brings back the original home screen if it was replaced.'
+    : 'Installs it, waits for you to switch on its accessibility service, then switches off the original launcher and setup wizard (never one without the other).';
+}
+
+async function pickerGo(mode) {
+  const steps = [...document.querySelectorAll('[data-step]')].filter((c) => c.checked).map((c) => c.dataset.step);
+  if (!steps.length) { toast('tick at least one step', true); return; }
+  const home = S.detail.profile.home || {}, changes = {};
+  const l = $('#pick-launcher').value, sc = $('#pick-screensaver').value, an = $('#pick-anim').value;
+  if (l !== String(home.launcher ?? '')) changes.launcher = l || null;
+  if (sc !== String(home.screensaver ?? '')) changes.screensaver = sc || null;
+  if (an !== String(home.animation_scale ?? '')) changes.animation_scale = an === '' ? null : +an;
+  if (Object.keys(changes).length) await post(`/api/tv/${S.selected}/home`, changes);
+  S.opts.reboot = $('#pick-reboot').checked;
+  const recipe = Object.entries(S.meta.recipes).find(([, r]) => r.length === steps.length && r.every((x) => steps.includes(x)));
+  saveRecipe(recipe ? recipe[0] : 'full');
+  closeModal();
+  await post(`/api/tv/${S.selected}/run`, { mode, steps, reboot: mode === 'apply' && S.opts.reboot, measure: mode === 'apply' });
+  S.viewRun = null;
+  toast(`${mode === 'plan' ? 'preview' : 'run'} started: ${steps.join(', ')}`);
+  await loadState(); await loadDetail(S.selected); renderLive();
+  $('#sec-pipeline').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 async function startRun(mode) {
   try {
     const body = { mode, reboot: mode === 'apply' ? S.opts.reboot : false, measure: mode !== 'plan' };
@@ -976,6 +1118,12 @@ document.addEventListener('click', async (e) => {
       renderLive(); $('#sec-pipeline').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } else if (a === 'back-live') { S.viewRun = null; renderLive(); }
     else if (a === 'restore') restoreModal();
+    else if (a === 'run-picker') runPicker();
+    else if (a === 'recipe') {
+      const steps = new Set(S.meta.recipes[t.dataset.recipe]);
+      document.querySelectorAll('[data-step]').forEach((c) => { if (!c.disabled) c.checked = steps.has(c.dataset.step); });
+      document.querySelectorAll('[data-action="recipe"]').forEach((b) => b.setAttribute('aria-selected', b === t));
+    } else if (a === 'picker-go') await pickerGo(t.dataset.mode);
     else if (a === 'revert') revertModal(t.dataset.run);
     else if (a === 'revert-go') {
       const keep = $('#revert-keep').checked;
@@ -1032,6 +1180,12 @@ document.addEventListener('click', async (e) => {
       toast('sent: the agent picks it up when it next checks in');
     } else if (a === 'note-dismiss') await post(`/api/agent/${t.dataset.id}/dismiss`);
     else if (a === 'keys-reload') { S.keys = null; renderKeys(); loadKeys(); }
+    else if (a === 'store-reload') { S.store = null; renderStore(); loadStore(); }
+    else if (a === 'store-install') await appRun('install', t.dataset.app);
+    else if (a === 'store-update') await appRun('update', t.dataset.app);
+    else if (a === 'store-uninstall') uninstallModal(t.dataset.app, t.dataset.name);
+    else if (a === 'store-uninstall-go') { closeModal(); await appRun('uninstall', t.dataset.app); }
+    else if (a === 'store-open') { await post(`/api/tv/${S.selected}/open`, { package: t.dataset.pkg }); toast('opened on the TV'); }
     else if (a === 'keys-learn') {
       await post(`/api/tv/${S.selected}/keys/capture`, { seconds: 20 });
       clearInterval(S.capture.timer);
@@ -1061,6 +1215,8 @@ document.addEventListener('click', async (e) => {
 document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.matches('[data-opt]')) { S.opts[t.dataset.opt] = t.checked; return; }
+  if (t.id === 'pick-launcher') { updateHomeHint(); return; }
+  if (t.matches('[data-step]')) { document.querySelectorAll('[data-action="recipe"]').forEach((b) => b.setAttribute('aria-selected', false)); return; }
   if (t.matches('select.decision')) {
     t.disabled = true;
     try {
@@ -1106,6 +1262,7 @@ function tick() { $('#clock').textContent = new Date().toLocaleTimeString([], { 
 
 (async function boot() {
   tick(); setInterval(tick, 1000);
+  S.meta = await api('/api/workflow-meta').catch(() => ({ steps: {}, recipes: { full: [] }, launchers: [], screensavers: [] }));
   await loadState();
   connectEvents();
   const fromHash = new URLSearchParams(location.hash.slice(1)).get('tv');

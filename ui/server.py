@@ -553,8 +553,15 @@ def make_handler(app):
                     return json.loads(run_path.read_text())
                 if name and sub == "/keys":
                     return app.keys_view(name)
+                if name and sub == "/store":
+                    return tv.store_view(app.ctx(name))
                 if path == "/api/catalog":
                     return tv.load_catalog()
+                if path == "/api/workflow-meta":
+                    cat = tv.load_catalog()
+                    return {"steps": tv.STEPS, "recipes": tv.RECIPES,
+                            "launchers": [{"id": i, "name": a["name"]} for i, a in cat.items() if a.get("home")],
+                            "screensavers": [{"id": i, "name": a["name"]} for i, a in cat.items() if a.get("dream")]}
             if method == "POST":
                 body = self._body()
                 try:
@@ -593,9 +600,19 @@ def make_handler(app):
                     return data
                 if name and sub == "/run":
                     mode = body.get("mode", "apply")
-                    if mode not in ("apply", "plan", "verify", "restore", "revert"):
+                    if mode not in ("apply", "plan", "verify", "restore", "revert", "app"):
                         raise tv.TvError("bad mode")
                     options = {}
+                    if mode in ("apply", "plan") and body.get("steps"):
+                        options["steps"] = tv.parse_steps(only=",".join(body["steps"]))
+                    if mode == "app":
+                        if body.get("app_action") not in ("install", "uninstall", "update") or \
+                                not re.fullmatch(r"[A-Za-z0-9_.-]+", str(body.get("app", ""))):
+                            raise tv.TvError("app run needs app_action install|uninstall and an app id/package")
+                        # the dashboard asked "are you sure?" before an uninstall
+                        options = {"app_action": body["app_action"], "app": body["app"],
+                                   "track": body.get("track", True), "yes": True}
+                        body["measure"] = False
                     if mode == "revert":
                         tv.load_run(name, str(body.get("run_id", "")))  # validates the id
                         options = {"revert_run": body["run_id"], "keep_reverted": bool(body.get("keep"))}
@@ -616,10 +633,20 @@ def make_handler(app):
                     else:
                         entry["open"] = body.get("open", "")
                     return app.save_key(name, scan, entry)
+                if name and sub == "/home":
+                    tv.set_home_settings(name, {k: body[k] for k in ("launcher", "screensaver", "animation_scale")
+                                                if k in body})
+                    return {"ok": True}
                 if name and sub == "/measure":
                     return app.measure(name)
                 if name and sub == "/apps":
                     tv.set_app_decision(name, body["package"], body["decision"])
+                    return {"ok": True}
+                if name and sub == "/open":
+                    pkg = str(body.get("package", ""))
+                    if not re.fullmatch(r"[A-Za-z0-9_.]+", pkg):
+                        raise tv.TvError("bad package name")
+                    tv.try_target(app.ctx(name), {"open": pkg})
                     return {"ok": True}
                 if name and sub == "/open-play":
                     pkg = body["package"]

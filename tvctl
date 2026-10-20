@@ -6,9 +6,11 @@
   tvctl inventory PROFILE [--class unknown] [--mem]
   tvctl plan PROFILE                      what apply would change
   tvctl apply PROFILE [--yes]             make the TV match the profile (safe to re-run)
+        [--recipe full|apps-only|cleanup|home-screen] [--only apps,debloat,home,screensaver,tweaks,buttons]
   tvctl restore PROFILE [PKG...|--all]    re-enable disabled packages, restore stock home
   tvctl revert PROFILE RUN_ID [--keep]    undo what one run changed
-  tvctl install PROFILE APP_ID [--force]  install one catalog app
+  tvctl install PROFILE APP [--force]     install one catalog app on its own (no debloat needed)
+  tvctl uninstall PROFILE APP [--yes]     uninstall one app
   tvctl keys capture|learn|set|rm|push PROFILE ...
   tvctl status PROFILE [--reboot]
   tvctl ui                                dashboard at http://127.0.0.1:8787 (auto-started by workflows)
@@ -536,11 +538,16 @@ def keymap_string(ctx):
 
 
 def keymap_app(ctx):
+    """The app that receives [keys] (Remote Remap): from the profile, else from the catalog."""
     for app_id in ctx.install_ids():
         app = ctx.app(app_id)
         if app.get("keymap"):
             return app
-    return None
+    return next((a for a in ctx.catalog.values() if a.get("keymap")), None)
+
+
+def keymap_app_id(ctx):
+    return next((i for i, a in ctx.catalog.items() if a.get("keymap")), None)
 
 
 def push_keymap(ctx, raw):
@@ -579,10 +586,7 @@ def plan_packages(ctx):
     acts = []
     for pkg in sorted(ctx.pkgs):
         if pkg in live:
-            if not ctx.enabled(pkg):
-                acts.append(action("live-tv", pkg, "enable", "live TV package must stay on",
-                                   fn=lambda p=pkg: pm(ctx, "enable", p)))
-            elif pkg in wanted_off:
+            if ctx.enabled(pkg) and pkg in wanted_off:
                 acts.append(action("packages", pkg, "disable", "refused: needed for live TV", status="error"))
             continue
         cls, note, _ = ctx.classifier.classify(pkg)
@@ -600,12 +604,20 @@ def plan_packages(ctx):
             elif on:
                 acts.append(action("packages", pkg, "disable", note or "listed in disable",
                                    fn=lambda p=pkg: pm(ctx, "disable", p), undo={"op": "enable", "pkg": pkg}))
-        elif cls == "bloat" and on and pkg not in protected:
+        elif cls == "bloat" and on and pkg not in protected and apps.get("debloat", True):
             acts.append(action("packages", pkg, "disable", note, fn=lambda p=pkg: pm(ctx, "disable", p),
                                undo={"op": "enable", "pkg": pkg}))
     for pkg in sorted(wanted_off - set(ctx.pkgs)):
         acts.append(action("packages", pkg, "disable", "not installed on this TV", status="skipped"))
     return acts
+
+
+def plan_live_tv(ctx):
+    """Runs in every workflow: live TV packages are switched back on if anything turned them off."""
+    live, _ = live_tv(ctx.presets)
+    return [action("live-tv", pkg, "enable", "live TV package must stay on", fn=lambda p=pkg: pm(ctx, "enable", p),
+                   undo={"op": "disable", "pkg": pkg})
+            for pkg in sorted(live) if ctx.installed(pkg) and not ctx.enabled(pkg)]
 
 
 def uninstall_fn(ctx, pkg):
@@ -711,15 +723,74 @@ def plan_animations(ctx):
                    undo={"op": "settings", "ns": "global", "values": current})]
 
 
-PLANNERS = [plan_baseline, plan_install, plan_autostart, plan_a11y, plan_keymap,
-            plan_packages, plan_user_apps, plan_launcher, plan_screensaver, plan_animations]
+# A run is any combination of these steps. Dependencies are pulled in by the step itself
+# (home installs and sets up its launcher before switching off the original one, etc.).
+STEPS = {
+    "apps": "Install the profile's apps and remove the ones you don't want",
+    "debloat": "Disable bloat and tracking (presets plus your disable list)",
+    "home": "Switch to the chosen home screen: installs the launcher first, then switches off the original",
+    "screensaver": "Set the chosen screensaver (installs it if needed)",
+    "tweaks": "Animation speed",
+    "buttons": "Push the remote button map (installs Remote Remap if needed)",
+}
+RECIPES = {
+    "full": list(STEPS),
+    "apps-only": ["apps"],
+    "cleanup": ["debloat", "tweaks"],
+    "home-screen": ["home"],
+}
 
 
-def make_plan(ctx):
-    acts = []
-    for planner in PLANNERS:
-        acts += planner(ctx)
-    return acts
+def parse_steps(only=None, skip=None, recipe=None):
+    steps = list(RECIPES[recipe]) if recipe else list(STEPS)
+    if only:
+        steps = [x.strip() for x in only.split(",") if x.strip()]
+    if skip:
+        steps = [x for x in steps if x not in {y.strip() for y in skip.split(",")}]
+    bad = [x for x in steps if x not in STEPS]
+    if bad:
+        raise TvError(f"unknown step(s) {', '.join(bad)}; steps: {', '.join(STEPS)}")
+    return steps
+
+
+def plan_app_setup(ctx, app_id):
+    """Install + autostart + accessibility for one catalog app, whether or not it is in [apps].install."""
+    if not app_id or app_id not in ctx.catalog or ctx.catalog[app_id]["source"] == "system":
+        return []
+    pkg = ctx.catalog[app_id]["package"]
+    saved = ctx.prof["apps"].get("install", [])
+    ctx.prof["apps"]["install"] = list(saved) + ([app_id] if app_id not in saved else [])
+    try:
+        return [a for planner in (plan_install, plan_autostart, plan_a11y) for a in planner(ctx) if a["target"] == pkg]
+    finally:
+        ctx.prof["apps"]["install"] = saved
+
+
+def make_plan(ctx, steps=None):
+    steps = set(steps or STEPS)
+    home = ctx.prof["home"]
+    acts = plan_baseline(ctx) + plan_live_tv(ctx)
+    if "apps" in steps:
+        acts += plan_install(ctx) + plan_autostart(ctx) + plan_a11y(ctx) + plan_user_apps(ctx)
+    if "buttons" in steps and ctx.prof["keys"]:
+        acts += plan_app_setup(ctx, keymap_app_id(ctx)) + plan_keymap(ctx)
+    if "debloat" in steps:
+        acts += plan_packages(ctx)
+    if "home" in steps and home.get("launcher"):
+        if home["launcher"] != "stock":
+            acts += plan_app_setup(ctx, home["launcher"])
+        acts += plan_launcher(ctx)
+    if "screensaver" in steps and home.get("screensaver"):
+        acts += plan_app_setup(ctx, home["screensaver"]) + plan_screensaver(ctx)
+    if "tweaks" in steps:
+        acts += plan_animations(ctx)
+    seen, out = set(), []
+    for a in acts:  # a step's dependency may already be planned by another step
+        key = (a["target"], a["action"])
+        if key not in seen:
+            seen.add(key)
+            out.append(a)
+    return out
 
 
 # ---------------------------------------------------------------- output
@@ -757,7 +828,7 @@ def ctx_for(args):
 def cmd_plan(args):
     ensure_ui()
     ctx = ctx_for(args)
-    acts = make_plan(ctx)
+    acts = make_plan(ctx, parse_steps(args.only, args.skip, args.recipe))
     emit(args, {"tv": ctx.prof["tv"]["name"], "actions": public(acts)},
          lambda: (print(f"Plan for {ctx.prof['tv']['name']} ({ctx.dev.addr}):"), print_actions(acts)))
     return EXIT_OK
@@ -790,14 +861,17 @@ class Workflow:
     mode: "apply" | "plan" | "verify" (reboot + measure) | "restore" (back to the TV's defaults)
     """
     def __init__(self, profile, mode="apply", hooks=None, yes=False, reboot=False, measure=True, source="cli",
-                 revert_run=None, keep_reverted=False):
+                 revert_run=None, keep_reverted=False, app_action=None, app=None, track=True, steps=None):
         self.profile_name, self.mode, self.hooks = profile, mode, hooks or Hooks()
         self.revert_run, self.keep_reverted = revert_run, keep_reverted
+        self.app_action, self.app_ref, self.track = app_action, app, track
+        self.steps = steps or list(STEPS)
         self.yes, self.reboot, self.measure, self.source = yes, reboot, measure, source
         self.ctx = None
         self.record = {"id": datetime.now().strftime("%Y%m%d-%H%M%S"), "tv": None, "mode": mode, "source": source,
                        "started": now_iso(), "finished": None, "outcome": "running", "phases": [],
-                       "perf_before": None, "perf_after": None, "rounds": [], "summary": {}, "status": None}
+                       "perf_before": None, "perf_after": None, "rounds": [], "summary": {}, "status": None,
+                       "steps": steps or list(STEPS) if mode in ("apply", "plan") else None}
 
     def emit(self, type_, **data):
         self.hooks.emit({"type": type_, "tv": self.record["tv"], "run": self.record["id"], "time": now_iso(), **data})
@@ -819,14 +893,14 @@ class Workflow:
     def run(self):
         prof = load_profile(self.profile_name)
         self.record["tv"] = prof["tv"]["name"]
-        self.emit("run", status="running", mode=self.mode, source=self.source)
+        self.emit("run", status="running", mode=self.mode, source=self.source, steps=self.record.get("steps"))
         try:
             self.phase("connect", lambda: self._connect(prof))
             if self.measure:
                 self.record["perf_before"] = self.phase("measure-before", self._measure)
                 self.emit("perf", which="before", data=self.record["perf_before"])
             if self.mode == "plan":
-                acts = self.phase("plan", lambda: make_plan(self.ctx))
+                acts = self.phase("plan", lambda: make_plan(self.ctx, self.steps))
                 self._round(acts, execute=False)
                 self.record["outcome"] = "ok"
             elif self.mode == "apply":
@@ -835,6 +909,8 @@ class Workflow:
                 self.phase("restore", self._restore)
             elif self.mode == "revert":
                 self.phase("revert", self._revert)
+            elif self.mode == "app":
+                self.phase("app", self._app)
             if self.mode != "plan" and self.record["outcome"] in ("ok", "running") and \
                     (self.mode == "verify" or (self.reboot and self.record["summary"].get("changed"))):
                 self.phase("reboot", self.ctx.dev.reboot_and_wait)
@@ -862,6 +938,7 @@ class Workflow:
         r = self.record
         pb, pa = r["perf_before"] or {}, r["perf_after"] or {}
         return {"id": r["id"], "tv": r["tv"], "mode": r["mode"], "source": r["source"], "outcome": r["outcome"],
+                "steps": r.get("steps"),
                 "started": r["started"], "finished": r["finished"], "summary": r["summary"],
                 "mem_before": pb.get("mem_available_mb"), "mem_after": pa.get("mem_available_mb"),
                 "error": r.get("error")}
@@ -915,7 +992,7 @@ class Workflow:
         changed = 0
         while True:
             self._check_stop()
-            acts = make_plan(self.ctx)
+            acts = make_plan(self.ctx, self.steps)
             self._round(acts)
             changed += sum(1 for a in acts if a["status"] == "done")
             waiting = [a for a in acts if a["status"] in ("manual", "blocked")]
@@ -946,6 +1023,65 @@ class Workflow:
             self.record["outcome"] = "waiting"
         else:
             self.record["outcome"] = "ok"
+
+    def _app(self):
+        """Install or uninstall one app, without touching anything else on the TV."""
+        ctx, name = self.ctx, self.record["tv"]
+        app_id, app = catalog_app_for(ctx, self.app_ref)
+        pkg = app["package"] if app else self.app_ref
+        self.record["app"] = {"action": self.app_action, "id": app_id, "package": pkg}
+        if self.app_action == "update":
+            if not app or app["source"] != "apk":
+                raise TvError("only APK apps from the catalog can be updated here (Play Store apps update themselves)")
+            self._round([action("app", pkg, "update", f"{app['name']} → {app.get('version') or 'catalog APK'}",
+                                fn=install_apk_fn(ctx, app))])
+        elif self.app_action == "uninstall":
+            roles = app_roles(ctx, pkg)
+            if roles:
+                raise TvError(f"{pkg} is used as {', '.join(roles)} in the profile – change that first")
+            if not ctx.installed(pkg):
+                acts = [action("app", pkg, "uninstall", "not installed", status="skipped")]
+            elif ctx.pkgs[pkg]["user"]:
+                acts = [action("app", pkg, "uninstall", "deletes the app and its data", status="confirm",
+                               fn=uninstall_fn(ctx, pkg), undo={"op": "reinstall", "pkg": pkg, "app": app_id})]
+            else:  # preinstalled: can only be switched off
+                acts = [action("app", pkg, "disable", "preinstalled app: switched off (reversible)",
+                               fn=lambda: pm(ctx, "disable", pkg), undo={"op": "enable", "pkg": pkg})]
+            self._round(acts)
+            if self.track and app_id and acts[0]["status"] in ("done", "skipped"):
+                track_app(name, app_id, add=False)
+        else:
+            if not app:
+                raise TvError(f"'{self.app_ref}' is not in apps.toml – add it there first (prompts/verify-apk.md)")
+            if self.track:
+                track_app(name, app_id, add=True)
+                ctx.prof = load_profile(name)
+            else:
+                ctx.prof["apps"]["install"] = list(ctx.prof["apps"].get("install", [])) + [app_id]
+            while True:  # install, then the app's own setup steps (autostart app-op, accessibility, key map)
+                acts = [a for planner in (plan_install, plan_autostart, plan_a11y, plan_keymap)
+                        for a in planner(ctx) if a["target"] == pkg]
+                if not acts:
+                    break
+                self._round(acts)
+                ctx.refresh()
+                waiting = [a for a in acts if a["status"] in ("manual", "blocked")]
+                if any(a["status"] == "error" for a in acts) or len(self.record["rounds"]) >= 6:
+                    break
+                if waiting:
+                    self.emit("waiting", items=public(waiting))
+                    if not self.hooks.wait(public(waiting)):
+                        break
+                    ctx.refresh()
+        final = self.record["rounds"][-1] if self.record["rounds"] else []
+        self.record["summary"] = {
+            "changed": sum(1 for r in self.record["rounds"] for a in r if a["status"] == "done"),
+            "errors": sum(1 for a in final if a["status"] == "error"),
+            "installed": sum(1 for r in self.record["rounds"] for a in r if a["status"] == "done" and a["action"] in ("install", "update")),
+            "uninstalled": sum(1 for r in self.record["rounds"] for a in r if a["status"] == "done" and a["action"] == "uninstall"),
+            "app": self.record["app"], "waiting": [public([a])[0] for a in final if a["status"] in ("manual", "blocked", "declined")]}
+        self.record["outcome"] = ("error" if self.record["summary"]["errors"] else
+                                  "waiting" if self.record["summary"]["waiting"] else "ok")
 
     def _revert(self):
         source = load_run(self.record["tv"], self.revert_run)
@@ -1047,8 +1183,13 @@ def revert_plan(ctx, record):
             acts.append(action("revert", pkg, "uninstall", f"undo: installed by that run", status="confirm",
                                fn=uninstall_fn(ctx, pkg)))
         elif op == "reinstall" and not ctx.installed(pkg):
-            acts.append(action("revert", pkg, "reinstall", "uninstalled by that run: reinstall it from the Play Store",
-                               status="manual"))
+            app = ctx.catalog.get(u.get("app") or "") or next((a for a in ctx.catalog.values() if a["package"] == pkg), None)
+            if app and app["source"] == "apk":
+                acts.append(action("revert", pkg, "install", f"reinstall {app['name']} from {app['file']}",
+                                   fn=install_apk_fn(ctx, app)))
+            else:
+                acts.append(action("revert", pkg, "reinstall", "uninstalled by that run: reinstall it from the Play Store",
+                                   status="manual"))
         elif op == "appop":
             acts.append(action("revert", pkg, "appop", f"{u['name']} → {u['value']}",
                                fn=lambda p=pkg, n=u["name"], v=u["value"]: ctx.dev.sh(f"appops set {p} {n} {v}")))
@@ -1077,6 +1218,64 @@ def revert_plan(ctx, record):
             acts.append(action("revert", u["ns"], "settings", ", ".join(f"{k}={v}" for k, v in u["values"].items()),
                                fn=fn))
     return acts
+
+
+def catalog_app_for(ctx, ref):
+    """Catalog id or package -> (app_id, app) or (None, None)."""
+    if ref in ctx.catalog:
+        return ref, ctx.catalog[ref]
+    for app_id, app in ctx.catalog.items():
+        if app["package"] == ref:
+            return app_id, app
+    return None, None
+
+
+def app_roles(ctx, pkg):
+    """Why an app must not be uninstalled from the store, if it plays a role in the profile."""
+    home = ctx.prof["home"]
+    roles = []
+    for role, key in (("home screen", "launcher"), ("screensaver", "screensaver")):
+        ref = home.get(key)
+        if ref and ref != "stock" and ref in ctx.catalog and ctx.catalog[ref]["package"] == pkg:
+            roles.append(role)
+    km = keymap_app(ctx)
+    if km and km["package"] == pkg and ctx.prof["keys"]:
+        roles.append("remote buttons")
+    return roles
+
+
+def store_view(ctx):
+    """Catalog apps (installable) and other user apps (removable) on this TV."""
+    tracked = set(ctx.install_ids())
+    apps = []
+    for app_id, app in ctx.catalog.items():
+        if app["source"] == "system":
+            continue
+        pkg = app["package"]
+        installed = ctx.installed(pkg)
+        apps.append({"id": app_id, "name": app["name"], "package": pkg, "source": app["source"],
+                     "note": app.get("note", ""), "catalog_version": app.get("version"),
+                     "installed": installed, "enabled": ctx.enabled(pkg),
+                     "version": ctx.dev.version(pkg) if installed else None,
+                     "in_profile": app_id in tracked, "needs_a11y": bool(app.get("a11y")),
+                     "roles": app_roles(ctx, pkg),
+                     "blocked": app["source"] == "play" and not ctx.installed("com.android.vending")})
+    known = {a["package"] for a in ctx.catalog.values()}
+    others = [{"package": p, "note": ctx.classifier.classify(p)[1]} for p, i in sorted(ctx.pkgs.items())
+              if i["user"] and p not in known]
+    return {"apps": apps, "others": others, "debloat": ctx.prof["apps"].get("debloat", True),
+            "launcher": ctx.prof["home"].get("launcher")}
+
+
+def track_app(profile, app_id, add):
+    """Add/remove a catalog app in [apps].install so the workflow keeps (or stops) installing it."""
+    prof = load_profile(profile)
+    current = list(prof["apps"].get("install", []))
+    values = current + [app_id] if add and app_id not in current else [a for a in current if a != app_id]
+    if values != current:
+        text = set_toml_array(prof["_path"].read_text(), "apps", "install", values)
+        tomllib.loads(text)
+        prof["_path"].write_text(text)
 
 
 def load_run(name, run_id):
@@ -1137,7 +1336,7 @@ class CliHooks(Hooks):
 def cmd_apply(args):
     ensure_ui()
     wf = Workflow(args.profile, "apply", CliHooks(args), yes=args.yes, reboot=args.reboot,
-                  measure=args.measure, source="cli")
+                  measure=args.measure, source="cli", steps=parse_steps(args.only, args.skip, args.recipe))
     rec = wf.run()
     if rec["outcome"] == "error" and rec.get("error"):
         raise TvError(rec["error"])
@@ -1210,18 +1409,36 @@ def cmd_revert(args):
 
 
 def cmd_install(args):
+    ensure_ui()
     ctx = ctx_for(args)
-    app = ctx.app(args.app_id)
-    if ctx.installed(app["package"]) and not args.force:
+    app_id, app = catalog_app_for(ctx, args.app_id)
+    if app and ctx.installed(app["package"]) and not args.force:
         print(f"{app['name']} already installed ({ctx.dev.version(app['package'])}); use --force to reinstall")
         return EXIT_OK
-    if app["source"] != "apk":
-        ctx.dev.sh(f"am start -a android.intent.action.VIEW -d market://details?id={app['package']}")
-        print(f"Opened the Play Store page for {app['name']} on the TV – click Install there.")
-        return EXIT_USER
-    install_apk_fn(ctx, app)()
-    print(f"✓ installed {app['name']} {ctx.dev.version(app['package']) or ''}")
-    return EXIT_OK
+    if app and args.force and app["source"] == "apk":
+        install_apk_fn(ctx, app)()
+        print(f"✓ reinstalled {app['name']} {ctx.dev.version(app['package']) or ''}")
+        return EXIT_OK
+    rec = Workflow(args.profile, "app", CliHooks(args), measure=False, app_action="install", app=args.app_id,
+                   track=not args.no_track).run()
+    return report_app_run(args, rec)
+
+
+def cmd_uninstall(args):
+    ensure_ui()
+    rec = Workflow(args.profile, "app", CliHooks(args), yes=args.yes, measure=False, app_action="uninstall",
+                   app=args.app, track=not args.no_track).run()
+    return report_app_run(args, rec)
+
+
+def report_app_run(args, rec):
+    if rec["outcome"] == "error" and rec.get("error"):
+        raise TvError(rec["error"])
+    s = rec["summary"]
+    emit(args, {"outcome": rec["outcome"], "run": rec["id"], "summary": s}, lambda: print(
+        f"✓ {rec['mode']} run {rec['id']}: {s.get('installed', 0)} installed, {s.get('uninstalled', 0)} uninstalled"
+        if rec["outcome"] == "ok" else f"{rec['outcome']}: " + "; ".join(a["detail"] for a in s.get("waiting", []))))
+    return EXIT_OK if rec["outcome"] == "ok" else EXIT_USER if rec["outcome"] == "waiting" else EXIT_ERR
 
 
 def inventory_rows(ctx, mem=False, with_plan=False):
@@ -1334,20 +1551,61 @@ def set_toml_array(text, section, key, values):
         raise TvError(f"profile has no [{section}] section")
     body = sec.group(0)
     m = re.search(rf"^{key}\s*=\s*\[(.*?)\]", body, re.M | re.S)
-    old_lines = {}
+    old_lines = {}  # keep "  "pkg",  # comment" lines for items that stay (one item per line only)
     if m:
         for line in m.group(1).splitlines():
-            q = re.search(r'"([^"]+)"', line)
-            if q:
-                old_lines[q.group(1)] = line.strip()
+            quoted = re.findall(r'"([^"]+)"', line.split("#", 1)[0])
+            if len(quoted) == 1 and "#" in line:
+                old_lines[quoted[0]] = f'"{quoted[0]}",  #' + line.split("#", 1)[1].rstrip()
     items = [old_lines.get(v, f'"{v}",') for v in values]
-    items = [i if re.search(r'"\s*,', i) else re.sub(r'(")(\s*#|$)', r'\1,\2', i, count=1) for i in items]
     new = f"{key} = []" if not items else f"{key} = [\n" + "".join(f"  {i}\n" for i in items) + "]"
     if m:
         body = body[:m.start()] + new + body[m.end():]
     else:
         body = body.rstrip("\n") + f"\n{new}\n\n"
     return text[:sec.start()] + body + text[sec.end():]
+
+
+def set_toml_value(text, section, key, value):
+    """Set `key = value` in [section] (re-using a `# key = ...` template line), or comment it out if value is None."""
+    sec = re.search(rf"^\[{re.escape(section)}\]\n(?:(?!^\[).*\n?)*", text, re.M)
+    if not sec:
+        raise TvError(f"profile has no [{section}] section")
+    body = sec.group(0)
+    live = re.search(rf"^{key}\s*=\s*[^#\n]*?(\s+#.*)?$", body, re.M)
+    template = re.search(rf"^#\s*{key}\s*=.*$", body, re.M)
+    line = f"{key} = {json.dumps(value)}"
+    if value is None:
+        if live:
+            body = body[:live.start()] + "# " + live.group(0) + body[live.end():]
+    elif live:
+        body = body[:live.start()] + line + (live.group(1) or "") + body[live.end():]
+    elif template:
+        body = body[:template.start()] + line + body[template.end():]
+    else:
+        body = body.rstrip("\n") + f"\n{line}\n\n"
+    return text[:sec.start()] + body + text[sec.end():]
+
+
+def set_home_settings(profile, values):
+    """values: subset of launcher / screensaver / animation_scale; None removes the setting."""
+    prof = load_profile(profile)
+    catalog = load_catalog()
+    text = prof["_path"].read_text()
+    for key, value in values.items():
+        if key == "launcher" and value not in (None, "stock") and not catalog.get(value, {}).get("home"):
+            raise TvError(f"{value} is not a launcher in apps.toml")
+        if key == "screensaver" and value is not None and not catalog.get(value, {}).get("dream"):
+            raise TvError(f"{value} is not a screensaver in apps.toml")
+        if key == "animation_scale" and value is not None:
+            value = float(value)
+            if not 0 <= value <= 2:
+                raise TvError("animation_scale must be 0–2")
+        if key not in ("launcher", "screensaver", "animation_scale"):
+            raise TvError(f"unknown home setting {key}")
+        text = set_toml_value(text, "home", key, value)
+    tomllib.loads(text)
+    prof["_path"].write_text(text)
 
 
 def set_app_decision(profile, pkg, decision):
@@ -1792,6 +2050,8 @@ keep = []
 disable = []
 # "keep-others" leaves other user-installed apps alone; "remove-others" uninstalls them (asks first)
 user_apps = "keep-others"
+# false = apps only: don't disable preset bloat automatically (only what `disable` lists)
+debloat = true
 
 [home]
 # launcher = "projectivy"      # catalog id, or "stock"
@@ -1873,8 +2133,13 @@ def main():
     p = add("inventory", cmd_inventory, "list packages with their classification")
     p.add_argument("--class", dest="cls", choices=["core", "bloat", "optional", "unknown", "user"])
     p.add_argument("--mem", action="store_true", help="include RAM use (slow)")
-    add("plan", cmd_plan, "show what apply would change")
+    def step_args(p):
+        p.add_argument("--recipe", choices=list(RECIPES), help="full (default) | apps-only | cleanup | home-screen")
+        p.add_argument("--only", metavar="STEPS", help=f"comma list of steps: {','.join(STEPS)}")
+        p.add_argument("--skip", metavar="STEPS", help="steps to leave out")
+    step_args(add("plan", cmd_plan, "show what apply would change"))
     p = add("apply", cmd_apply, "make the TV match the profile")
+    step_args(p)
     p.add_argument("--yes", action="store_true", help="confirm uninstalls without asking")
     p.add_argument("--no-wait", action="store_true", help="don't wait for manual steps")
     p.add_argument("--reboot", action="store_true", help="reboot after changes and verify")
@@ -1888,9 +2153,14 @@ def main():
     p.add_argument("--keep", action="store_true", help="add re-enabled packages to [apps].keep")
     p.add_argument("--yes", action="store_true", help="confirm uninstalls of apps that run installed")
     p.add_argument("--measure", action="store_true")
-    p = add("install", cmd_install, "install one catalog app")
-    p.add_argument("app_id")
-    p.add_argument("--force", action="store_true")
+    p = add("install", cmd_install, "install one catalog app (and keep it in the profile)")
+    p.add_argument("app_id", help="catalog id or package")
+    p.add_argument("--force", action="store_true", help="reinstall an APK app that is already installed")
+    p.add_argument("--no-track", action="store_true", help="don't add it to [apps].install")
+    p = add("uninstall", cmd_uninstall, "uninstall one app (catalog id or package)")
+    p.add_argument("app", help="catalog id or package")
+    p.add_argument("--yes", action="store_true", help="don't ask before deleting the app and its data")
+    p.add_argument("--no-track", action="store_true", help="don't remove it from [apps].install")
     p = add("status", cmd_status, "show TV state")
     p.add_argument("--reboot", action="store_true", help="reboot first and check the TV boots into the profile")
     add("snapshot", cmd_snapshot, "save the current package state")

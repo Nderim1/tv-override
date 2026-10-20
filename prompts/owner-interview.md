@@ -8,6 +8,7 @@ and offer the recommended answer. Before asking, run `./tvctl --json inventory <
 
 | Ask | Maps to |
 |---|---|
+| Full makeover, or only some parts? (apps only / cleanup / new home screen / everything) | recipe or `--only` steps for the run; apps only → `[apps].debloat = false` and no `[home].launcher` |
 | Which apps do you actually watch with? (streaming, Kodi, YouTube…) | `[apps].install` (catalog ids), `[apps].keep` |
 | Do you watch antenna / cable / satellite channels on the TV itself? | yes → pin the brand's live TV player (preset `[live_tv].player`) in the launcher, offer a remote button for it. Live TV packages stay on either way |
 | Do you use YouTube? Signed in? Ads bother you? | recommend `smarttube` (ad-free, sign-in keeps subscriptions); stock YouTube goes to `disable` |

@@ -61,6 +61,31 @@ On the TV: Settings → System → About → click "Build" 7× → Developer opt
 
 Or in Claude Code: "set up the TV at 192.168.1.50" and the `tv-setup` skill takes it from there.
 
+## Pick what a run does
+
+A run is any combination of steps. Each step pulls in what it needs, so nothing half-done can happen
+(the original launcher is only switched off as part of "home", after the new one is installed and set up).
+
+| Step | Does | Recipes |
+|---|---|---|
+| `apps` | install the profile's apps, remove unwanted ones | full, apps-only |
+| `debloat` | disable bloat/tracking (presets + your disable list) | full, cleanup |
+| `home` | switch to the chosen launcher (or back to `stock`) | full, home-screen |
+| `screensaver` | set the chosen screensaver, installing it if needed | full |
+| `tweaks` | animation speed | full, cleanup |
+| `buttons` | push the remote button map, installing Remote Remap if needed | full |
+
+```bash
+./tvctl apply kitchen-sony --recipe apps-only
+./tvctl apply kitchen-sony --only home,screensaver
+./tvctl install kitchen-sony smarttube        # one app, nothing else
+./tvctl uninstall kitchen-sony com.example.app
+```
+
+In the dashboard: ▶ RUN WORKFLOW… opens the step picker (recipes, per-step choices, PREVIEW / RUN), and
+[03] app store installs, updates, opens and uninstalls single apps. A profile with `debloat = false` is
+"apps only": preset bloat is never disabled, only what its `disable` list names.
+
 ## Everyday commands
 
 ```bash

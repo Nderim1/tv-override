@@ -38,7 +38,8 @@ when you parse output. tvctl exit code 2 means the owner has to do something on 
 
 ## Existing TV
 
-- Owner wants a change → edit the profile → `plan` → `apply`.
+- Owner wants a change → edit the profile → `plan` → `apply` (only the steps that matter: `--only home`,
+  `--recipe apps-only`, …). One app on its own: `./tvctl install <name> <app>` / `uninstall`.
 - After a vendor update or a factory reset → `./tvctl apply <name>` re-applies everything (factory reset: redo
   developer options/ADB first; the serial stays the same).
 - App update → `prompts/verify-apk.md`, then `./tvctl install <name> <app> --force`.
