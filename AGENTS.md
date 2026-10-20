@@ -25,6 +25,13 @@ commands (Codex, Claude Code, …).
 - `prompts/` – agent prompts; `prompts/roles/` – helper roles. `agent.toml` – how `tvctl helper` runs them.
 - `legacy/` – the first, one-off scripts. Reference only.
 
+## Platforms
+
+`[tv].platform` in a profile: `adb` (Android, full workflow) or a TV without ADB (`vestel`, `roku`, `webos`,
+`tizen`, `dial`) that only supports DIAL app launching, network keys where available and the guided
+walkthrough. tvctl refuses ADB-only commands on those with an explanation; suggest an Android TV stick on HDMI
+when the owner wants the full workflow.
+
 ## Rules that matter most
 
 Change TVs through profiles + `tvctl` (plan → apply, or single steps / single apps), never touch `core` /

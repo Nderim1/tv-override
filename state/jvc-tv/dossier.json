@@ -1,0 +1,66 @@
+{
+ "taken": "2026-10-20T13:55:54+02:00",
+ "tv": "jvc-tv",
+ "platform": "vestel",
+ "platform_label": "Vestel smart TV (JVC, Hitachi, Telefunken, Finlux, Toshiba, Panasonic\u2026)",
+ "brand": null,
+ "model": "JVC JVC TV",
+ "name": null,
+ "network": [
+  {
+   "iface": "lan",
+   "ip": "10.165.138.127"
+  }
+ ],
+ "ports": [
+  7681,
+  56789
+ ],
+ "upnp": [],
+ "dial_url": "http://10.165.138.127:56789/apps/",
+ "apps": [
+  {
+   "id": "YouTube",
+   "name": "YouTube",
+   "state": "running"
+  },
+  {
+   "id": "Netflix",
+   "name": "Netflix",
+   "state": "stopped"
+  },
+  {
+   "id": "AmazonInstantVideo",
+   "name": "Prime Video",
+   "state": "stopped"
+  }
+ ],
+ "capabilities": [
+  "dial",
+  "guide"
+ ],
+ "capabilities_text": [
+  "start and stop YouTube / Netflix / Prime Video over the network (DIAL)",
+  "guided preparation walkthrough"
+ ],
+ "presets": [
+  "core",
+  "streaming-apps",
+  "vestel"
+ ],
+ "live_tv": {
+  "tuner_inputs": [],
+  "external_inputs": 0,
+  "channels": null
+ },
+ "notes": [
+  {
+   "level": "warn",
+   "text": "Not Android: no developer mode, so no debloat, app installs, launcher or screenshots. For the full workflow, add an Android / Google TV streaming stick on HDMI."
+  },
+  {
+   "level": "info",
+   "text": "Remote keys over the network are off on this TV (port 4660 closed)."
+  }
+ ]
+}

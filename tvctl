@@ -21,6 +21,8 @@
   tvctl helper ROLE --tv TV "QUESTION"    read-only helper agent (same model, lowest effort; agent.toml)
   tvctl screenshot PROFILE [--out F]      PNG of what the TV shows (for the agent to look at)
   tvctl discover PROFILE                  read all TV data (state/<tv>/dossier.json)
+  tvctl dial PROFILE [list|launch|stop APP]   apps over the network (TVs without ADB too)
+  tvctl key PROFILE KEY...                send remote keys (Android, Roku, Vestel with LAN keys)
   tvctl guide show|set|verify|done|skip|auto PROFILE ...   preparation walkthrough for this TV
   tvctl snapshot PROFILE
 
@@ -43,6 +45,7 @@ import tempfile
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -438,15 +441,18 @@ def guide_path(name):
 
 def builtin_guide(ctx, dossier):
     """Preparation steps from the presets' [[prepare]] tables, filtered for this TV."""
+    live = dossier.get("live_tv") or {}
     conditions = {
-        "tuner": bool(dossier["live_tv"]["tuner_inputs"]),
-        "play_store": dossier["play_store"],
-        "hdmi": dossier["live_tv"]["external_inputs"] > 0,
-        "low_ram": (dossier["ram_mb"] or 0) < 2500,
+        "tuner": bool(live.get("tuner_inputs")),
+        "play_store": dossier.get("play_store", False),
+        "hdmi": (live.get("external_inputs") or 0) > 0,
+        "low_ram": 0 < (dossier.get("ram_mb") or 0) < 2500,
+        "not_android": dossier.get("platform", "adb") != "adb",
     }
-    steps = [{"id": "adb", "title": "Developer options and USB debugging", "why": "Lets this app talk to the TV.",
-              "path": ["Settings", "System", "About", "Build (click 7×)", "Developer options", "USB debugging"],
-              "how": "Already done: the app is connected.", "check": {"type": "adb"}, "required": True}]
+    steps = [] if dossier.get("platform", "adb") != "adb" else [
+        {"id": "adb", "title": "Developer options and USB debugging", "why": "Lets this app talk to the TV.",
+         "path": ["Settings", "System", "About", "Build (click 7×)", "Developer options", "USB debugging"],
+         "how": "Already done: the app is connected.", "check": {"type": "adb"}, "required": True}]
     for p in all_presets().values():
         name = p.get("preset", {}).get("name")
         if name not in dossier["presets"]:
@@ -1072,6 +1078,10 @@ def print_actions(acts):
 
 def ctx_for(args):
     prof = load_profile(args.profile)
+    if platform_of(prof) != "adb":
+        caps = platform_caps(prof)
+        raise TvError(f"{prof['tv']['name']} is a {PLATFORMS[platform_of(prof)]['label']}: this needs ADB (Android). "
+                      "It can: " + "; ".join(CAP_TEXT[c] for c in caps if c in CAP_TEXT) + ". " + NOT_ANDROID)
     dev = Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
     dev.connect(wait=getattr(args, "wait", 0))
     ctx = Ctx(prof, dev)
@@ -1745,6 +1755,15 @@ def cmd_inventory(args):
 
 def cmd_discover(args):
     ensure_ui()
+    prof = load_profile(args.profile)
+    if platform_of(prof) != "adb":
+        d = discover_network(prof)
+        UiClient().send({"type": "prepare", "tv": d["tv"], "what": "dossier"})
+        emit(args, d, lambda: (print(f"{d['brand'] or ''} {d['model'] or ''} · {d['platform_label']}"),
+                               print("can: " + "; ".join(d["capabilities_text"])),
+                               print("apps: " + ", ".join(f"{a['name']} ({a['state']})" for a in d["apps"]) if d["apps"] else ""),
+                               [print(f"  {'⚠' if n['level'] == 'warn' else 'ℹ'} {n['text']}") for n in d["notes"]]))
+        return EXIT_OK
     ctx = ctx_for(args)
     d = discover(ctx)
     UiClient().send({"type": "prepare", "tv": d["tv"], "what": "dossier"})
@@ -1760,18 +1779,43 @@ def cmd_discover(args):
     return EXIT_OK
 
 
+def guide_mark(name, step_id, what):
+    g = json.loads(guide_path(name).read_text())
+    st = next((x for x in g["steps"] if x["id"] == step_id), None)
+    if not st:
+        raise TvError(f"no step {step_id}")
+    st["status"] = {"done": "done", "skip": "skipped", "reset": "todo"}[what]
+    guide_path(name).write_text(json.dumps(g, indent=1))
+    return g
+
+
 def cmd_guide(args):
-    ctx = ctx_for(args)
-    name = ctx.prof["tv"]["name"]
+    prof = load_profile(args.profile)
+    adb = platform_of(prof) == "adb"
+    name = prof["tv"]["name"]
+    rebuild = getattr(args, "rebuild", False)
+    needs_tv = adb and (args.guide_cmd in ("verify", "auto")
+                        or (args.guide_cmd == "show" and (rebuild or not guide_path(name).exists())))
+    ctx = ctx_for(args) if needs_tv else ProfOnly(prof)
     if args.guide_cmd == "show":
-        guide = load_guide(ctx, rebuild=args.rebuild)
+        if not adb:
+            guide = network_guide(prof, rebuild=rebuild)
+        elif needs_tv:
+            guide = load_guide(ctx, rebuild=rebuild)
+        else:
+            guide = json.loads(guide_path(name).read_text())
     elif args.guide_cmd == "set":
         new = json.loads(Path(args.file).read_text() if args.file != "-" else sys.stdin.read())
         new.setdefault("source", "agent")
         guide = save_guide(name, new, keep_status_from=json.loads(guide_path(name).read_text())
                            if guide_path(name).exists() else None)
         UiClient().send({"type": "prepare", "tv": name, "what": "guide"})
+    elif args.guide_cmd in ("done", "skip", "reset"):
+        guide = guide_mark(name, args.step, args.guide_cmd)
+        UiClient().send({"type": "prepare", "tv": name, "what": "guide"})
     else:
+        if not adb:
+            raise TvError("steps on this TV can't be checked over the network: mark them done yourself")
         guide = guide_step_action(ctx, args.step, args.guide_cmd)
         UiClient().send({"type": "prepare", "tv": name, "what": "guide"})
     def human():
@@ -1779,6 +1823,35 @@ def cmd_guide(args):
         for st in guide["steps"]:
             print(f"  [{st['status']:<8}] {st['id']:<18} {st['title']}" + (f"  ({' › '.join(st['path'])})" if st.get("path") else ""))
     emit(args, guide, human)
+    return EXIT_OK
+
+
+def cmd_dial(args):
+    prof = load_profile(args.profile)
+    if platform_of(prof) == "roku" and args.action == "list":
+        apps = roku_apps(prof)
+    elif args.action == "list":
+        apps = dial_apps(prof)
+    else:
+        if not args.app:
+            raise TvError("which app? e.g. YouTube, Netflix, AmazonInstantVideo")
+        if platform_of(prof) == "roku":
+            req = urllib.request.Request(f"http://{prof['tv']['host']}:8060/launch/{urllib.parse.quote(args.app)}",
+                                         data=b"", method="POST")
+            urllib.request.urlopen(req, timeout=5).read()
+        else:
+            dial_control(prof, args.app, args.action)
+        apps = [{"id": args.app, "state": args.action}]
+    emit(args, apps, lambda: [print(f"  {a.get('name', a['id']):<16} {a['state']}") for a in apps])
+    return EXIT_OK
+
+
+def cmd_key(args):
+    prof = load_profile(args.profile)
+    for k in args.keys:
+        send_key(prof, k.lower())
+        time.sleep(0.25)
+    emit(args, {"sent": args.keys}, lambda: print(f"sent {' '.join(args.keys)}"))
     return EXIT_OK
 
 
@@ -2347,10 +2420,278 @@ def cmd_keys(args):
     return EXIT_OK
 
 
+# ---- platforms: Android over ADB, and TVs without ADB (Vestel, Roku, LG webOS, Samsung Tizen, DIAL)
+
+# caps: what tvctl can do there. "full" = the whole ADB workflow.
+PLATFORMS = {
+    "adb": {"label": "Android TV / Google TV / Fire TV", "caps": ["full", "guide"], "port": 5555},
+    "vestel": {"label": "Vestel smart TV (JVC, Hitachi, Telefunken, Finlux, Toshiba, Panasonic…)",
+               "caps": ["dial", "guide", "keys?"], "port": 56789, "dial": "http://{host}:56789/apps/"},
+    "roku": {"label": "Roku TV", "caps": ["roku-apps", "keys", "guide"], "port": 8060},
+    "webos": {"label": "LG webOS", "caps": ["dial", "guide"], "port": 3000},
+    "tizen": {"label": "Samsung Tizen", "caps": ["dial", "guide"], "port": 8001},
+    "dial": {"label": "Smart TV (DIAL only)", "caps": ["dial", "guide"], "port": 0},
+}
+CAP_TEXT = {
+    "full": "debloat, apps, launcher, screensaver, buttons, screenshots, performance",
+    "dial": "start and stop YouTube / Netflix / Prime Video over the network (DIAL)",
+    "roku-apps": "list and launch installed channels",
+    "keys": "send remote keys over the network", "keys?": "remote keys over the network (if the TV allows it)",
+    "guide": "guided preparation walkthrough",
+}
+NOT_ANDROID = ("Not Android: no developer mode, so no debloat, app installs, launcher or screenshots. "
+               "For the full workflow, add an Android / Google TV streaming stick on HDMI.")
+DIAL_APPS = {"YouTube": "YouTube", "Netflix": "Netflix", "AmazonInstantVideo": "Prime Video",
+             "Disney+": "Disney+", "SmartTube": "SmartTube"}
+ROKU_KEYS = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "ok": "Select", "back": "Back",
+             "home": "Home", "play": "Play", "info": "Info", "volup": "VolumeUp", "voldown": "VolumeDown",
+             "mute": "VolumeMute", "power": "Power"}
+VESTEL_KEYS = {"up": 1020, "down": 1019, "left": 1021, "right": 1022, "ok": 1053, "back": 1010, "home": 1046,
+               "menu": 1048, "volup": 1016, "voldown": 1017, "mute": 1013, "power": 1012, "info": 1018,
+               "source": 1056, "play": 1025, "pause": 1049}
+ADB_KEYS = {"up": "DPAD_UP", "down": "DPAD_DOWN", "left": "DPAD_LEFT", "right": "DPAD_RIGHT", "ok": "DPAD_CENTER",
+            "back": "BACK", "home": "HOME", "menu": "MENU", "volup": "VOLUME_UP", "voldown": "VOLUME_DOWN",
+            "mute": "VOLUME_MUTE", "power": "POWER", "info": "INFO", "play": "MEDIA_PLAY_PAUSE"}
+
+
+def platform_of(prof):
+    return prof["tv"].get("platform", "adb")
+
+
+def ssdp_search(target=None, st="ssdp:all", wait=2.5):
+    """UPnP discovery. target=None: multicast to the local network; else unicast to that host.
+    Returns {ip: {"server": set, "locations": set, "dial": bool}}."""
+    msg = (f"M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: {st}\r\n\r\n").encode()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(0.3)
+    found = {}
+    try:
+        sock.sendto(msg, (target or "239.255.255.250", 1900))
+        if not target and st == "ssdp:all":
+            sock.sendto(msg.replace(b"ST: ssdp:all", b"ST: urn:dial-multiscreen-org:service:dial:1"), ("239.255.255.250", 1900))
+        end = time.time() + wait
+        while time.time() < end:
+            try:
+                data, addr = sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            text = data.decode(errors="replace")
+            entry = found.setdefault(addr[0], {"server": set(), "locations": set(), "dial": False})
+            for key, value in re.findall(r"^(SERVER|LOCATION|ST|USN):\s*(.+?)\r?$", text, re.M | re.I):
+                key = key.upper()
+                if key == "SERVER":
+                    entry["server"].add(value.strip())
+                elif key == "LOCATION":
+                    entry["locations"].add(value.strip())
+                elif "dial-multiscreen" in value:
+                    entry["dial"] = True
+    except OSError:
+        pass
+    finally:
+        sock.close()
+    return found
+
+
+def upnp_describe(location):
+    """friendlyName / manufacturer / model from a UPnP description, plus the DIAL Application-URL header."""
+    try:
+        with urllib.request.urlopen(location, timeout=3) as r:
+            xml = r.read(200000).decode(errors="replace")
+            app_url = r.headers.get("Application-URL")
+    except Exception:
+        return None
+    get = lambda k: (re.search(rf"<{k}>(.*?)</{k}>", xml, re.S) or [None, None])[1]
+    return {"friendly_name": get("friendlyName"), "manufacturer": get("manufacturer"), "model": get("modelName"),
+            "model_number": get("modelNumber"), "description": get("modelDescription"), "udn": get("UDN"),
+            "type": get("deviceType"), "dial_url": app_url}
+
+
+def identify(host, ports=None, ssdp=None):
+    """What kind of TV is this? Uses open ports, UPnP descriptions and DIAL. No ADB needed."""
+    ports = set(ports if ports is not None else probe(host, [5555, 6466, 8008, 8060, 3000, 3001, 8001, 8002,
+                                                             56789, 7681, 4660])[1])
+    info = ssdp if ssdp is not None else ssdp_search(host).get(host, {"server": set(), "locations": set()})
+    descs = [d for d in (upnp_describe(loc) for loc in sorted(info.get("locations", []))[:4]) if d]
+    text = " ".join([*info.get("server", [])] + [" ".join(str(v) for v in d.values() if v) for d in descs]).lower()
+    name = next((d["friendly_name"] for d in descs if d.get("friendly_name") and "vewd" not in d["friendly_name"].lower()), None)
+    maker = next((d["manufacturer"] for d in descs if d.get("manufacturer")), None)
+    model = next((d["model"] for d in descs if d.get("model") and d["model"] not in ("-", "Vewd")), None)
+    dial = next((d["dial_url"] for d in descs if d.get("dial_url")), None)
+    if 5555 in ports or {6466, 8008} & ports or "android" in text or "amazon" in text:
+        platform = "adb"
+    elif 8060 in ports or "roku" in text:
+        platform = "roku"
+    elif "vewd" in text or {56789, 7681} <= ports or "vestel" in text:
+        platform = "vestel"
+    elif {3000, 3001} & ports or "webos" in text or "lg electronics" in text:
+        platform = "webos"
+    elif {8001, 8002} & ports or "samsung" in text or "tizen" in text:
+        platform = "tizen"
+    elif dial or info.get("dial"):
+        platform = "dial"
+    else:
+        platform = None
+    brand = None
+    for b in ("JVC", "Hitachi", "Telefunken", "Finlux", "Toshiba", "Panasonic", "Sharp", "Grundig", "Hisense",
+              "Philips", "Sony", "LG", "Samsung", "TCL", "Roku", "Amazon", "Xiaomi"):
+        if re.search(rf"\b{b.lower()}\b", text):
+            brand = b
+            break
+    if platform == "vestel" and not dial:
+        dial = PLATFORMS["vestel"]["dial"].format(host=host)
+    return {"platform": platform, "label": PLATFORMS.get(platform, {}).get("label"), "brand": brand or maker,
+            "name": name, "model": model, "dial_url": dial, "ports": sorted(ports),
+            "udn": next((d["udn"] for d in descs if d.get("udn")), None),
+            "keys_port": 4660 if (platform == "vestel" and 4660 in ports) else None,
+            "upnp": [{k: v for k, v in d.items() if v} for d in descs]}
+
+
+def dial_base(prof):
+    t = prof["tv"]
+    return t.get("dial_url") or (PLATFORMS.get(platform_of(prof), {}).get("dial") or "").format(host=t["host"]) or None
+
+
+def dial_status(base, app):
+    try:
+        with urllib.request.urlopen(base.rstrip("/") + "/" + urllib.parse.quote(app), timeout=3) as r:
+            xml = r.read().decode(errors="replace")
+        state = re.search(r"<state>(.*?)</state>", xml)
+        return state.group(1) if state else "unknown"
+    except urllib.error.HTTPError as e:
+        return "not installed" if e.code == 404 else f"error {e.code}"
+    except Exception:
+        return "unreachable"
+
+
+def dial_apps(prof):
+    base = dial_base(prof)
+    if not base:
+        raise TvError("this TV has no DIAL address")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        states = list(pool.map(lambda a: dial_status(base, a), DIAL_APPS))
+    return [{"id": a, "name": n, "state": st} for (a, n), st in zip(DIAL_APPS.items(), states)
+            if st not in ("not installed",)]
+
+
+def dial_control(prof, app, what):
+    base = dial_base(prof)
+    if app not in DIAL_APPS:
+        raise TvError(f"unknown app {app}; known: {', '.join(DIAL_APPS)}")
+    url = base.rstrip("/") + "/" + urllib.parse.quote(app)
+    try:
+        if what == "launch":
+            req = urllib.request.Request(url, data=b"", method="POST", headers={"Content-Type": "text/plain"})
+        else:  # stop: DELETE on the running instance (DIAL's <link rel="run">), else on .../run
+            with urllib.request.urlopen(url, timeout=3) as r:
+                xml = r.read().decode(errors="replace")
+            run_href = (re.search(r'<link[^>]+rel="run"[^>]+href="([^"]+)"', xml) or [None, "run"])[1]
+            req = urllib.request.Request(url + "/" + run_href, method="DELETE")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        raise TvError(f"TV refused {what} {app}: HTTP {e.code}")
+    except OSError as e:
+        raise TvError(f"TV unreachable: {e}")
+
+
+def roku_apps(prof):
+    with urllib.request.urlopen(f"http://{prof['tv']['host']}:8060/query/apps", timeout=4) as r:
+        xml = r.read().decode(errors="replace")
+    return [{"id": m.group(1), "name": m.group(2), "state": "installed"}
+            for m in re.finditer(r'<app id="([^"]+)"[^>]*>([^<]*)</app>', xml)]
+
+
+def send_key(prof, key):
+    """One remote key, named like the dashboard pad: up/down/left/right/ok/back/home/menu/volup/voldown/mute/…"""
+    plat, t = platform_of(prof), prof["tv"]
+    if plat == "adb":
+        if key not in ADB_KEYS:
+            raise TvError(f"unknown key {key}")
+        Device(t["host"], t.get("port", 5555)).sh(f"input keyevent KEYCODE_{ADB_KEYS[key]}")
+    elif plat == "roku":
+        if key not in ROKU_KEYS:
+            raise TvError(f"unknown key {key}")
+        req = urllib.request.Request(f"http://{t['host']}:8060/keypress/{ROKU_KEYS[key]}", data=b"", method="POST")
+        urllib.request.urlopen(req, timeout=4).read()
+    elif plat == "vestel":
+        if key not in VESTEL_KEYS:
+            raise TvError(f"unknown key {key}")
+        try:
+            with socket.create_connection((t["host"], 4660), timeout=3) as sk:
+                sk.sendall(f"{VESTEL_KEYS[key]}\r\n".encode())
+        except OSError:
+            raise TvError("this TV does not accept network keys (port 4660 closed)")
+    else:
+        raise TvError(f"remote keys are not supported on {PLATFORMS.get(plat, {}).get('label', plat)} yet")
+
+
+def platform_caps(prof):
+    plat = platform_of(prof)
+    caps = list(PLATFORMS.get(plat, {}).get("caps", []))
+    if "keys?" in caps:
+        caps.remove("keys?")
+        if probe(prof["tv"]["host"], [4660], timeout=1)[1]:
+            caps.append("keys")
+    return caps
+
+
+def discover_network(prof):
+    """Fact sheet for a TV without ADB, from the network."""
+    t = prof["tv"]
+    ident = identify(t["host"])
+    plat = platform_of(prof)
+    try:
+        apps = roku_apps(prof) if plat == "roku" else dial_apps(prof) if dial_base(prof) else []
+    except (TvError, OSError):
+        apps = []
+    caps = platform_caps(prof)
+    notes = [{"level": "warn", "text": NOT_ANDROID}]
+    if "keys" not in caps and plat in ("vestel",):
+        notes.append({"level": "info", "text": "Remote keys over the network are off on this TV (port 4660 closed)."})
+    d = {"taken": now_iso(), "tv": t["name"], "platform": plat, "platform_label": PLATFORMS[plat]["label"],
+         "brand": ident.get("brand"), "model": ident.get("model") or t.get("model"), "name": ident.get("name"),
+         "network": [{"iface": "lan", "ip": t["host"]}], "ports": ident["ports"], "upnp": ident["upnp"],
+         "dial_url": ident.get("dial_url"), "apps": apps, "capabilities": caps,
+         "capabilities_text": [CAP_TEXT[c] for c in caps if c in CAP_TEXT],
+         "presets": [p.get("preset", {}).get("name") for p in active_presets(t.get("presets", []))],
+         "live_tv": {"tuner_inputs": [], "external_inputs": 0, "channels": None},
+         "notes": notes}
+    STATE_DIR.joinpath(t["name"]).mkdir(parents=True, exist_ok=True)
+    (STATE_DIR / t["name"] / "dossier.json").write_text(json.dumps(d, indent=1))
+    return d
+
+
+class ProfOnly:
+    """Stand-in for Ctx where only the profile is needed (TVs without ADB)."""
+    def __init__(self, prof):
+        self.prof = prof
+
+
+def network_guide(prof, rebuild=False):
+    path = guide_path(prof["tv"]["name"])
+    if path.exists() and not rebuild:
+        return json.loads(path.read_text())
+    dossier = load_dossier(prof["tv"]["name"]) or discover_network(prof)
+    guide = builtin_guide(ProfOnly(prof), dossier)
+    path.write_text(json.dumps(guide, indent=1))
+    return guide
+
+
+def net_prof(args, need=None):
+    """Profile of any platform; with `need`, check the platform can do it."""
+    prof = load_profile(args.profile)
+    if need and need not in platform_caps(prof) and not (need != "full" and platform_of(prof) == "adb"):
+        raise TvError(f"{PLATFORMS[platform_of(prof)]['label']} can't do this. It can: "
+                      + "; ".join(CAP_TEXT[c] for c in platform_caps(prof) if c in CAP_TEXT))
+    return prof
+
+
 # ---- find / init
 
 PRIVATE_PREFIXES = ("10.", "192.168.", *(f"172.{n}." for n in range(16, 32)))
 TV_PORTS = [5555, 6466, 8008, 8060]
+# Probed on hosts that answer ping: other TV platforms (LG webOS, Samsung Tizen, Vestel).
+PLATFORM_PORTS = [3000, 3001, 8001, 8002, 56789, 7681, 4660]
 # Ports that tell other devices apart, probed only on hosts that answer ping.
 ID_PORTS = {62078: "iPhone / iPad", 53: "router", 445: "computer", 22: "computer", 548: "Mac",
             7000: "AirPlay device", 631: "printer", 9100: "printer", 80: "web interface"}
@@ -2464,10 +2805,13 @@ def adb_serial(host, port):
     return serial if code == 0 and serial and "error" not in serial.lower() else None
 
 
-def classify_device(host, ports, mdns, gateway_hosts):
+def classify_device(host, ports, mdns, gateway_hosts, ident=None):
     svcs = mdns.get("services", {})
+    plat = (ident or {}).get("platform")
+    if plat and plat != "adb":
+        return f"{PLATFORMS[plat]['label']} · no ADB", True
     if 8060 in ports:
-        return "Roku (not supported: no ADB)", False
+        return "Roku TV · no ADB", True
     if 5555 in ports:
         return "Android TV · ADB on", True
     if "_adb-tls-connect._tcp" in svcs or "_adb-tls-pairing._tcp" in svcs:
@@ -2482,7 +2826,7 @@ def classify_device(host, ports, mdns, gateway_hosts):
     return "unknown device", False
 
 
-def find_tvs(cidrs=None, identify=True):
+def find_tvs(cidrs=None, deep=True):
     """Every device on the scanned networks, TVs first. TVs also come from mDNS and get matched to profiles."""
     nets = cidrs or local_networks()
     hosts = [str(h) for net in nets for h in ip_network(net, strict=False).hosts()]
@@ -2495,7 +2839,16 @@ def find_tvs(cidrs=None, identify=True):
     arp = arp_table()
     candidates = sorted(alive | {h for h, p in tv_ports.items() if p} | set(mdns), key=lambda h: tuple(map(int, h.split("."))))
     with ThreadPoolExecutor(max_workers=64) as pool:
-        id_ports = dict(pool.map(lambda h: probe(h, list(ID_PORTS)), candidates)) if identify else {}
+        id_ports = dict(pool.map(lambda h: probe(h, list(ID_PORTS) + PLATFORM_PORTS), candidates)) if deep else {}
+    ssdp = ssdp_search() if deep else {}  # multicast reaches this computer's own network
+    tvish = [h for h in candidates if set(tv_ports.get(h, [])) | (set(id_ports.get(h, [])) & set(PLATFORM_PORTS))
+             or ssdp.get(h, {}).get("locations")]
+    with ThreadPoolExecutor(max_workers=16) as pool:  # unicast SSDP for TVs on other networks (e.g. the modem's)
+        for h, info in zip(tvish, pool.map(lambda h: ssdp.get(h) or ssdp_search(h, wait=1.5).get(h), tvish)):
+            if info:
+                ssdp[h] = info
+        idents = dict(zip(tvish, pool.map(lambda h: identify(h, set(tv_ports.get(h, [])) | set(id_ports.get(h, [])),
+                                                             ssdp.get(h, {"server": set(), "locations": set()})), tvish)))
     gateways = {n.replace("0/24", "1") for n in nets}
     profiles = {}
     for path in PROFILES_DIR.glob("*.toml"):
@@ -2508,13 +2861,20 @@ def find_tvs(cidrs=None, identify=True):
     for host in candidates:
         ports = sorted(set(tv_ports.get(host, [])) | set(id_ports.get(host, [])))
         md = mdns.get(host, {})
-        kind, is_tv = classify_device(host, ports, md, gateways)
+        ident = idents.get(host) if deep else None
+        kind, is_tv = classify_device(host, ports, md, gateways, ident)
         tls = md.get("services", {}).get("_adb-tls-connect._tcp")
         adb_port = 5555 if 5555 in ports else tls
         item = {"host": host, "ports": ports, "kind": kind, "tv": is_tv, "adb_enabled": 5555 in ports,
                 "adb_port": adb_port, "pairing": bool(tls) and 5555 not in ports,
                 "name": (cast_name(host) if 8008 in ports else None) or (sorted(md.get("names", [])) or [None])[0],
-                "mac": arp.get(host), "profile": None, "moved_from": None}
+                "mac": arp.get(host), "profile": None, "moved_from": None,
+                "platform": (ident or {}).get("platform") or ("adb" if is_tv else None),
+                "brand": (ident or {}).get("brand"), "model": (ident or {}).get("model")}
+        if ident and ident.get("name") and not item["name"]:
+            item["name"] = ident["name"]
+        if item["platform"] and item["platform"] != "adb":
+            item["capabilities"] = [CAP_TEXT[c] for c in PLATFORMS[item["platform"]]["caps"] if c in CAP_TEXT]
         for pname, t in profiles.items():
             if t.get("host") == host:
                 item["profile"] = pname
@@ -2613,9 +2973,61 @@ debloat = true
 """
 
 
-def init_tv(name, host, port=5555, force=False, wait=120):
+NET_PROFILE_TEMPLATE = """# {name} – created by `tvctl init` on {date}. {label}: no ADB, so only these work here:
+# {caps}
+
+[tv]
+name = "{name}"
+host = "{host}"
+port = {port}
+platform = "{platform}"
+udn = "{udn}"
+model = "{model}"
+presets = {presets}
+{dial_line}
+"""
+
+
+def init_network_tv(name, host, ident, force=False):
+    path = PROFILES_DIR / f"{name}.toml"
+    if path.exists() and not force:
+        raise TvError(f"{path.name} exists (use --force to overwrite)")
+    plat = ident["platform"]
+    presets = [n for n, p in all_presets().items() if p.get("match", {}).get("platform") == plat]
+    parts = []
+    for x in (ident.get("brand"), ident.get("model"), ident.get("name")):
+        if x and not any(x.lower() in y.lower() or y.lower() in x.lower() for y in parts):
+            parts.append(x)
+    model = " ".join(parts) or PLATFORMS[plat]["label"]
+    PROFILES_DIR.mkdir(exist_ok=True)
+    path.write_text(NET_PROFILE_TEMPLATE.format(
+        name=name, date=datetime.now().date(), label=PLATFORMS[plat]["label"],
+        caps="; ".join(CAP_TEXT[c] for c in PLATFORMS[plat]["caps"] if c in CAP_TEXT),
+        host=host, port=PLATFORMS[plat]["port"], platform=plat, udn=ident.get("udn") or "",
+        model=model.replace('"', "'"), presets=json.dumps(presets),
+        dial_line=f'dial_url = "{ident["dial_url"]}"' if ident.get("dial_url") else ""))
+    prof = load_profile(name)
+    dossier = discover_network(prof)
+    network_guide(prof, rebuild=True)
+    return {"profile": str(path.relative_to(ROOT)), "name": name, "model": model, "presets": presets,
+            "platform": plat, "notes": dossier["notes"], "capabilities": dossier["capabilities_text"]}
+
+
+def init_tv(name, host, port=5555, force=False, wait=120, platform="auto"):
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", name):
         raise TvError("name: lowercase letters, digits and dashes, e.g. kitchen-sony")
+    if platform != "adb":
+        adb_open = bool(probe(host, [port], timeout=1)[1])
+        if platform != "auto" or not adb_open:
+            ident = identify(host)
+            if platform not in ("auto", None):
+                ident["platform"] = platform
+            if ident["platform"] and ident["platform"] != "adb":
+                return init_network_tv(name, host, ident, force)
+            if not adb_open:
+                raise TvError(f"{host}:{port} does not answer ADB. Android TV: turn on Developer options › USB debugging "
+                              "(or pair Wireless debugging). Other TVs: not recognised"
+                              + (f" (looks like {ident['label']})" if ident.get("label") else "") + ".")
     path = PROFILES_DIR / f"{name}.toml"
     if path.exists() and not force:
         raise TvError(f"{path.name} exists (use --force to overwrite)")
@@ -2650,7 +3062,13 @@ def init_tv(name, host, port=5555, force=False, wait=120):
 
 def cmd_init(args):
     ensure_ui()
-    data = init_tv(args.name, args.host, args.port, args.force)
+    data = init_tv(args.name, args.host, args.port, args.force, platform=args.platform)
+    if data.get("platform") and data["platform"] != "adb":
+        emit(args, data, lambda: (print(f"✓ {data['model']} · {PLATFORMS[data['platform']]['label']} (no ADB)"),
+                                  print("  can: " + "; ".join(data["capabilities"])),
+                                  [print(f"  {'⚠' if n['level'] == 'warn' else 'ℹ'} {n['text']}") for n in data["notes"]],
+                                  print(f"  wrote {data['profile']}; preparation guide: tvctl guide show {args.name}")))
+        return EXIT_OK
     def human():
         print(f"✓ {data['model']}")
         print(f"  presets detected: {', '.join(data['presets']) or 'none – this brand is new, see prompts/classify-packages.md'}")
@@ -2688,6 +3106,8 @@ def main():
     p.add_argument("name")
     p.add_argument("--host", required=True)
     p.add_argument("--port", type=int, default=5555)
+    p.add_argument("--platform", default="auto", choices=["auto", *PLATFORMS],
+                   help="auto: ADB if it answers, else recognise the TV over the network")
     p.add_argument("--force", action="store_true")
     p = add("inventory", cmd_inventory, "list packages with their classification")
     p.add_argument("--class", dest="cls", choices=["core", "bloat", "optional", "unknown", "user"])
@@ -2724,6 +3144,11 @@ def main():
     p.add_argument("--reboot", action="store_true", help="reboot first and check the TV boots into the profile")
     add("snapshot", cmd_snapshot, "save the current package state")
     add("discover", cmd_discover, "read everything about the TV into state/<tv>/dossier.json")
+    p = add("dial", cmd_dial, "list / launch / stop apps over the network (DIAL; Roku: channels)")
+    p.add_argument("action", nargs="?", default="list", choices=["list", "launch", "stop"])
+    p.add_argument("app", nargs="?")
+    p = add("key", cmd_key, "send remote keys: up down left right ok back home menu volup voldown mute power …")
+    p.add_argument("keys", nargs="+")
     p = sub.add_parser("guide", help="preparation guide for this TV (walkthrough)")
     gsub = p.add_subparsers(dest="guide_cmd", required=True)
     for gname, ghelp in (("show", "show the guide (built from presets if missing)"), ("set", "store a guide from JSON"),

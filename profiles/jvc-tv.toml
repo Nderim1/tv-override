@@ -1,0 +1,12 @@
+# jvc-tv – created by `tvctl init` on 2026-10-20. Vestel smart TV (JVC, Hitachi, Telefunken, Finlux, Toshiba, Panasonic…): no ADB, so only these work here:
+# start and stop YouTube / Netflix / Prime Video over the network (DIAL); guided preparation walkthrough; remote keys over the network (if the TV allows it)
+
+[tv]
+name = "jvc-tv"
+host = "10.165.138.127"
+port = 56789
+platform = "vestel"
+udn = "uuid:13a188a6-adf5-111c-a779-0009df883426"
+model = "JVC TV"
+presets = ["vestel"]
+dial_url = "http://10.165.138.127:56789/apps/"

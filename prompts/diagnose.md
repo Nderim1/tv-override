@@ -13,6 +13,7 @@ adb -s <ip>:5555 logcat -d | grep -iE '<package>|denied|forbid|fail|exception' |
 |---|---|---|
 | `tvctl find` sees nothing | Is the computer on the same network? `ifconfig` | TV behind another router/modem: ADB from the LAN side usually still works if you know the TV's IP (Settings → Network) |
 | Scan finds no TV, but the TV is "connected" | `./tvctl find --all`: is the TV's IP in the device list at all? | Not listed: TV off or in standby (network off; TCL: enable Network standby), or on another network. Listed as unknown: debugging off. Listed with wireless debugging: pair first (`tvctl pair IP:PORT CODE`) |
+| TV found but "not Android" / "no ADB" | `./tvctl find` kind, `tvctl init` result | Vestel/Roku/LG/Samsung OS: no developer mode exists. Add it as a limited profile (DIAL, guide) and suggest an Android TV stick on HDMI |
 | Known TV unreachable after a router/modem restart | `./tvctl find` shows it with "moved from" | DHCP gave it a new IP: `./tvctl find --update` (dashboard: UPDATE ADDRESS) |
 | Android 11+ TV not on port 5555 | `adb mdns services` lists `_adb-tls-connect` | Wireless debugging uses a random port and a pairing code: `tvctl pair`, then init with that port |
 | `connection refused` on 5555 | TV answers ping/8008 | USB debugging is off (Developer options ≠ USB debugging) |

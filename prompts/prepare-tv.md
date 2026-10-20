@@ -4,6 +4,12 @@ Triggered by the dashboard's "◆ RESEARCH THIS MODEL" button (inbox topic `prep
 The owner then walks through your guide step by step in the dashboard ([P] prepare this TV), with the live
 screen on. Your job: turn generic steps into exact, model-specific ones.
 
+## TVs without ADB
+
+For `platform` other than `adb` there is no ADB: no checks or "auto" steps, the owner does every step with the
+remote and ticks it off. The dossier has the UPnP / DIAL facts instead of Android properties. Research the
+vendor OS menus (Vestel OS, webOS, Tizen, Roku) for privacy/ACR, HbbTV tracking, network standby and CEC.
+
 ## Inputs
 
 - `state/<tv>/dossier.json`: everything read from the TV (brand, model, product name, Android, firmware,

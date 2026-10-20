@@ -227,7 +227,7 @@ async function loadDetail(name) {
 }
 
 async function loadApps(mem = S.appsMem) {
-  if (!S.selected) return;
+  if (!S.selected || isNet()) return;
   const tv = S.detail?.summary;
   if (tv && !onlineOf(tv.name)) { S.apps = null; S.appsError = 'TV offline'; renderApps(); return; }
   S.appsLoading = true; S.appsError = null; renderApps();
@@ -242,7 +242,7 @@ async function loadApps(mem = S.appsMem) {
 }
 
 async function loadStore() {
-  if (!S.selected) return;
+  if (!S.selected || isNet()) return;
   if (!onlineOf(S.selected)) { S.store = null; S.storeError = 'TV offline'; renderStore(); return; }
   S.storeError = null;
   try {
@@ -254,7 +254,7 @@ async function loadStore() {
 }
 
 async function loadKeys() {
-  if (!S.selected) return;
+  if (!S.selected || isNet()) return;
   if (!onlineOf(S.selected)) { S.keys = null; S.keysError = 'TV offline'; renderKeys(); return; }
   S.keysError = null;
   try {
@@ -264,6 +264,8 @@ async function loadKeys() {
   } catch (e) { S.keysError = e.message; }
   renderKeys();
 }
+
+const isNet = () => S.detail && S.detail.summary.platform && S.detail.summary.platform !== 'adb';
 
 const onlineOf = (name) => S.tvs.find((t) => t.name === name)?.online;
 
@@ -280,6 +282,13 @@ async function selectTv(name) {
   try {
     await loadDetail(name);
   } catch (e) { toast(e.message, true); return; }
+  if (isNet()) {
+    renderMainNet();
+    renderAgent();
+    loadPrep();
+    loadDial();
+    return;
+  }
   renderMain();
   renderAgent();
   loadPrep();
@@ -311,7 +320,7 @@ function renderFleet() {
       return `<button class="tv-card ${t.name === S.selected ? 'active' : ''}" data-action="select" data-tv="${esc(t.name)}">
         <div class="name"><span>${esc(t.name)}${openAsks(t.name, true).length ? ' <span class="fleet-badge">◆ agent asks</span>' : ''}</span><span class="online ${t.online ? 'on' : ''}">${t.online ? 'ONLINE' : 'OFFLINE'}</span></div>
         <div class="meta">${esc(t.model || t.host)}</div>
-        <div class="meta">${esc(t.host)} · ${esc((t.presets || []).join(', ') || 'no presets')}</div>
+        <div class="meta">${esc(t.host)} · ${t.platform && t.platform !== 'adb' ? `<span class="chip">${esc(t.platform)} · no ADB</span>` : esc((t.presets || []).join(', ') || 'no presets')}</div>
         <div class="foot">
           <span>${busy ? '<span class="busy">● running</span>' : last ? `${st(last.outcome)} ${esc(ago(last.finished))}` : '<span class="dim">no runs yet</span>'}</span>
           <span title="RAM available at last measurement">${t.perf ? `${fmtMB(t.perf.mem_available_mb)} MB free` : ''}</span>
@@ -365,6 +374,7 @@ function renderMain() {
 
 function renderLive() {
   if (!$('#sec-head')) return;
+  if (isNet()) { renderHeadNet(); return; }
   renderHead();
   renderAlert();
   renderPerf();
@@ -797,7 +807,15 @@ function renderPrep() {
   if (P.error && !d) { el.innerHTML = head + `<div class="empty">${esc(P.error)}</div>`; return; }
   if (!d) { el.innerHTML = head + `<div class="empty">No TV data yet${on ? '' : ' (TV offline)'}.</div>`; return; }
   const lt = d.live_tv || {};
-  const facts = [
+  const facts = d.platform && d.platform !== 'adb' ? [
+    ['TV', [d.brand, d.model || d.name].filter(Boolean).filter((x, i, a) => !a.some((y, j) => j !== i && y.toLowerCase().includes(x.toLowerCase()))).join(' ') || '?', d.name || ''],
+    ['Platform', d.platform_label || d.platform, 'no Android, no developer mode'],
+    ['Network', (d.network || []).map((n) => n.ip).join(', '), `open ports ${(d.ports || []).join(', ') || '?'}`],
+    ['Apps (DIAL)', (d.apps || []).map((a) => a.name).join(', ') || 'none found', (d.apps || []).filter((a) => a.state === 'running').map((a) => a.name + ' running').join(', ')],
+    ['Can do here', (d.capabilities_text || []).length + ' thing(s)', (d.capabilities_text || []).join(' · ')],
+    ['UPnP', (d.upnp || []).map((u) => u.friendly_name).filter(Boolean).join(', ') || '–', (d.upnp || []).map((u) => u.description || u.manufacturer).filter(Boolean).join(' · ')],
+    ['Read', ago(d.taken), (d.presets || []).join(', ')],
+  ] : [
     ['TV', `${d.brand || ''} ${d.model || ''}`, d.props?.['ro.product.name']],
     ['System', `Android ${d.android}`, `patch ${d.security_patch || '?'} · fw ${d.firmware || '?'}`],
     ['Hardware', `${d.ram_mb} MB RAM · ${d.cpu_cores} cores`, `${d.soc || ''} · ${d.storage_free_gb}/${d.storage_total_gb} GB free`],
@@ -847,7 +865,8 @@ function renderPrep() {
       </span></div>
     <div class="prep-bar"><i style="width:${prog.total ? Math.round(100 * prog.done / prog.total) : 0}%"></i></div>
     <div class="prep-steps">${steps.map(stepHtml).join('')}</div>
-    <div class="hint" style="margin-top:8px">Steps marked required should be done before RUN WORKFLOW. The live screen below shows where you are on the TV.</div>`;
+    <div class="hint" style="margin-top:8px">${d.platform && d.platform !== 'adb' ? 'Do these with the TV remote and tick them off here. The agent can research the exact menus for this model.'
+      : 'Steps marked required should be done before RUN WORKFLOW. The live screen below shows where you are on the TV.'}</div>`;
 }
 
 async function prepStep(op, id) {
@@ -857,6 +876,66 @@ async function prepStep(op, id) {
   if (op === 'verify' || op === 'auto') toast(st.status === 'verified' ? '✓ verified on the TV' : `not done yet (${st.last_check})`, st.status !== 'verified');
   if (DONE_STATES.includes(st.status)) S.prep.open = g.steps.find((x) => !DONE_STATES.includes(x.status))?.id ?? null;
   renderPrep();
+}
+
+/* ------------------------------------------------------------------ TVs without ADB */
+
+function renderMainNet() {
+  $('#main').innerHTML = `
+    <section class="panel" id="sec-head"></section>
+    <section class="panel" id="sec-prep"></section>
+    <section class="panel" id="sec-dial"></section>
+    <section class="panel" id="sec-pad" hidden></section>
+    <section id="sec-agent"></section>`;
+  renderHeadNet();
+  renderPrep();
+  renderDial();
+}
+
+function renderHeadNet() {
+  const el = $('#sec-head');
+  if (!el) return;
+  const sum = S.detail.summary, on = onlineOf(sum.name);
+  const caps = (S.dial?.caps || sum.caps || []).filter((c) => c !== 'keys?');
+  const TEXT = { dial: 'start and stop YouTube / Netflix / Prime Video', 'roku-apps': 'list and launch channels', keys: 'remote keys over the network', guide: 'guided preparation' };
+  el.innerHTML = `<div class="tv-head"><div>
+      <h1 class="tv-title"><span class="prompt">&gt;</span>${esc(sum.name)}</h1>
+      <div class="tv-sub">${esc(sum.model)} · ${esc(sum.host)}</div>
+      <div class="chips"><span class="online ${on ? 'on' : ''}">${on ? 'ONLINE' : 'OFFLINE'}</span>
+        <span class="chip accent">${esc(sum.platform_label)}</span><span class="chip">no ADB</span></div></div></div>
+    <div class="alert" style="animation:none;margin-top:12px;padding:12px 14px">
+      <b class="st st-manual">⚠ Not an Android TV.</b> No developer mode exists on this TV, so debloating, installing apps, a new launcher,
+      screenshots and button remapping are not possible here. <b>What works:</b> ${caps.map((c) => esc(TEXT[c] || c)).join(' · ') || 'recognition only'}.
+      <div class="hint" style="margin-top:6px">For the full workflow, plug an Android / Google TV stick (Google TV Streamer, Chromecast with Google TV, Fire TV Stick)
+      into HDMI and add it with + ADD TV. The TV stays the display and keeps its own live TV tuner.</div></div>`;
+}
+
+async function loadDial() {
+  if (!S.selected || !onlineOf(S.selected)) { S.dial = { error: 'TV offline' }; renderDial(); return; }
+  try { S.dial = await api(`/api/tv/${S.selected}/dial`); } catch (e) { S.dial = { error: e.message }; }
+  renderDial(); renderHeadNet();
+}
+
+function renderDial() {
+  const el = $('#sec-dial');
+  if (!el) return;
+  const D = S.dial;
+  const head = `<div class="panel-head"><h2 class="panel-title"><b>[A]</b>apps on the TV</h2><button class="btn btn-sm" data-action="dial-reload">↻</button></div>`;
+  if (!D) { el.innerHTML = head + '<div class="empty"><span class="spin">◌</span> asking the TV…</div>'; return; }
+  if (D.error) { el.innerHTML = head + `<div class="empty">${esc(D.error)}</div>`; return; }
+  el.innerHTML = head + (D.apps.length ? `<div class="store-grid">${D.apps.map((a) => `<div class="store-card ${a.state === 'running' ? 'is-installed' : ''}">
+      <b>${esc(a.name)}</b><div class="store-status">${a.state === 'running' ? '<span class="st st-done">● running now</span>' : `<span class="st st-pending">○ ${esc(a.state)}</span>`}</div>
+      <div class="row" style="margin-top:8px"><button class="btn btn-sm btn-primary" data-action="dial-go" data-app="${esc(a.id)}" data-op="launch">▶ OPEN ON TV</button>
+      ${a.state === 'running' ? `<button class="btn btn-sm" data-action="dial-go" data-app="${esc(a.id)}" data-op="stop">■ STOP</button>` : ''}</div></div>`).join('')}</div>`
+    : '<div class="empty">The TV reports no DIAL apps.</div>')
+    + '<div class="hint" style="margin-top:8px">Uses DIAL, the protocol phones use to cast to the TV. Other apps can only be opened with the TV remote.</div>';
+  const pad = $('#sec-pad');
+  if (pad) {
+    pad.hidden = !(D.caps || []).includes('keys');
+    pad.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[R]</b>remote</h2></div>
+      <div class="pad">${[['power', '⏻'], ['home', '⌂'], ['back', '↩'], ['menu', '☰'], ['up', '▲'], ['volup', 'VOL+'], ['left', '◀'], ['ok', 'OK'], ['right', '▶'], ['mute', 'MUTE'], ['down', '▼'], ['voldown', 'VOL−']]
+        .map(([k, l]) => `<button class="btn" data-action="key" data-key="${k}" aria-label="${k}">${l}</button>`).join('')}</div>`;
+  }
 }
 
 /* ------------------------------------------------------------------ live screen */
@@ -899,7 +978,7 @@ function renderScreenStatus() {
 async function screenTick(once = false) {
   const Sc = S.screen, tv = S.selected;
   clearTimeout(Sc.timer);
-  if (!tv || !$('#screen-img')) return;
+  if (!tv || !$('#screen-img') || isNet()) return;
   const again = () => { if (Sc.live && !once) Sc.timer = setTimeout(() => screenTick(), Sc.interval); };
   if (document.hidden || Sc.busy) { again(); return; }
   if (!onlineOf(tv)) { Sc.error = 'TV offline'; renderScreenStatus(); again(); return; }
@@ -1202,9 +1281,11 @@ function addTvModal(found = null, scanning = false, nets = []) {
     else if (f.profile) action = `<span class="hint">already added: ${esc(f.profile)}</span>`;
     else if (f.pairing) action = `<button class="btn btn-sm btn-cyan" data-action="pair-start" data-host="${esc(f.host)}" data-port="${f.adb_port}">PAIR</button>`;
     else if (f.adb_enabled) action = `<button class="btn btn-sm" data-action="pick-host" data-host="${esc(f.host)}" data-port="${f.adb_port}">USE</button>`;
+    else if (f.platform && f.platform !== 'adb') action = `<button class="btn btn-sm" data-action="pick-host" data-host="${esc(f.host)}" data-port="5555" title="${esc((f.capabilities || []).join(' · '))}">ADD (limited)</button>`;
     else action = '<span class="hint">turn on USB or Wireless debugging first</span>';
-    const adb = f.adb_enabled ? '<span class="st st-done">✓ ADB on</span>' : f.pairing ? '<span class="st st-manual">⚿ needs pairing</span>' : '<span class="st st-manual">⚠ ADB off</span>';
-    return `<tr><td class="mono">${esc(f.host)}${f.adb_port && f.adb_port !== 5555 ? ':' + f.adb_port : ''}</td><td>${esc(f.kind)}</td><td>${esc(f.name || '')}</td><td>${adb}</td>
+    const adb = f.adb_enabled ? '<span class="st st-done">✓ ADB on</span>' : f.pairing ? '<span class="st st-manual">⚿ needs pairing</span>'
+      : f.platform && f.platform !== 'adb' ? '<span class="st st-skipped">– not Android</span>' : '<span class="st st-manual">⚠ ADB off</span>';
+    return `<tr><td class="mono">${esc(f.host)}${f.adb_port && f.adb_port !== 5555 ? ':' + f.adb_port : ''}</td><td>${esc(f.kind)}${f.capabilities ? `<div class="hint">${esc(f.capabilities.join(' · '))}</div>` : ''}</td><td>${esc([f.brand, f.name].filter(Boolean).join(' · '))}</td><td>${adb}</td>
       <td style="text-align:right">${action}${f.moved_from ? `<div class="hint">was ${esc(f.moved_from)}: the TV got a new address</div>` : ''}</td></tr>`;
   };
   modal(`<h2>+ Add a TV</h2>
@@ -1351,10 +1432,13 @@ document.addEventListener('click', async (e) => {
     } else if (a === 'back-live') { S.viewRun = null; renderLive(); }
     else if (a === 'restore') restoreModal();
     else if (a === 'run-picker') runPicker();
+    else if (a === 'dial-reload') { S.dial = null; renderDial(); loadDial(); }
+    else if (a === 'dial-go') { await post(`/api/tv/${S.selected}/dial/${encodeURIComponent(t.dataset.app)}/${t.dataset.op}`); toast(t.dataset.op === 'launch' ? 'opening on the TV…' : 'stopped'); setTimeout(loadDial, 2500); }
+    else if (a === 'key') await post(`/api/tv/${S.selected}/key`, { key: t.dataset.key });
     else if (a === 'prep-toggle') { const g = S.prep.data?.guide; const p = prepProgress(g); S.prep.show = !(S.prep.show ?? !(g && p.reqLeft === 0 && p.done === p.total)); renderPrep(); }
     else if (a === 'prep-open') {
       S.prep.open = S.prep.open === t.dataset.step ? '' : t.dataset.step; renderPrep();
-      if (S.prep.open && !S.screen.live && onlineOf(S.selected)) setLive(true);  // follow along on the live screen
+      if (S.prep.open && !S.screen.live && onlineOf(S.selected) && !isNet()) setLive(true);  // follow along on the live screen
     } else if (a === 'prep-step') await prepStep(t.dataset.op, t.dataset.step);
     else if (a === 'prep-discover') { S.prep.loading = true; renderPrep(); await post(`/api/tv/${S.selected}/discover`); await loadPrep(false); toast('TV data refreshed'); }
     else if (a === 'prep-rebuild') { if (confirm('Replace the guide with the built-in steps from the presets? Progress on matching steps is lost.')) { await post(`/api/tv/${S.selected}/guide/rebuild`); await loadPrep(false); } }

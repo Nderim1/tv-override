@@ -1,0 +1,90 @@
+{
+ "tv": "jvc-tv",
+ "source": "built-in",
+ "created": "2026-10-20T13:55:54+02:00",
+ "summary": "Generic preparation from the presets. Ask the agent to research this exact model for model-specific menus.",
+ "steps": [
+  {
+   "id": "update",
+   "title": "Install software updates first",
+   "why": "Updates fix bugs and sometimes reset privacy choices \u2013 update first, then go through the rest.",
+   "path": [
+    "Settings",
+    "System",
+    "More",
+    "Software upgrade"
+   ],
+   "how": "Choose 'Scan for upgrade' and install anything found.",
+   "required": false,
+   "from": "vestel",
+   "status": "todo"
+  },
+  {
+   "id": "viewing-info",
+   "title": "Turn off viewing information (Samba TV / ACR)",
+   "why": "Vestel TVs ship with Samba TV, which recognises what is on screen to build an ad profile.",
+   "path": [
+    "Settings",
+    "System",
+    "Privacy settings"
+   ],
+   "how": "Turn off 'Viewing information', 'Interactive TV' / Samba TV and similar consents. Menu names vary: follow what the TV shows.",
+   "required": true,
+   "from": "vestel",
+   "status": "todo"
+  },
+  {
+   "id": "hbbtv-privacy",
+   "title": "HbbTV: block tracking",
+   "why": "The red-button (HbbTV) service can track viewing even when you never open it.",
+   "path": [
+    "Settings",
+    "System",
+    "More",
+    "HBBTV settings"
+   ],
+   "how": "Set Do not track On, Cookies Off, Persistent storage Off, Block tracking sites On, and reset the Device ID. Turn HbbTV off completely if nobody uses the red button.",
+   "required": false,
+   "from": "vestel",
+   "status": "todo"
+  },
+  {
+   "id": "network-standby",
+   "title": "Network standby",
+   "why": "Keeps the TV reachable (DIAL app launching, casting) while it is in standby.",
+   "path": [
+    "Settings",
+    "Network",
+    "Network standby"
+   ],
+   "how": "Turn it on if the menu exists; it uses a little more power in standby.",
+   "required": false,
+   "from": "vestel",
+   "status": "todo"
+  },
+  {
+   "id": "cec",
+   "title": "HDMI-CEC for a streaming stick",
+   "why": "Needed if you add an Android / Google TV stick: one remote then controls TV power and volume.",
+   "path": [
+    "Settings",
+    "System",
+    "More",
+    "CEC settings"
+   ],
+   "how": "Turn CEC on (and 'CEC auto power on'). Only needed with a device on HDMI.",
+   "required": false,
+   "from": "vestel",
+   "status": "todo"
+  },
+  {
+   "id": "stick",
+   "title": "Optional: add an Android / Google TV stick for the full workflow",
+   "why": "This TV can't be debloated or get new apps. A Google TV Streamer, Chromecast with Google TV or Fire TV Stick on HDMI gets everything (Kodi, SmartTube, Projectivy, screensaver, buttons).",
+   "how": "Plug it into an HDMI port, finish its setup, turn on Developer options \u203a USB debugging, then + ADD TV in the control center.",
+   "required": false,
+   "from": "vestel",
+   "status": "todo"
+  }
+ ]
+}

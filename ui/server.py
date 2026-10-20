@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import traceback
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -319,7 +320,10 @@ class App:
                    and r.get("summary", {}).get("changed")]  # no-change runs only measure noise
         freed = [r["perf_after"]["mem_available_mb"] - r["perf_before"]["mem_available_mb"] for r in applied]
         last = runs[0] if runs else None
+        plat = t.get("platform", "adb")
         return {"name": name, "host": t["host"], "port": t.get("port", 5555), "model": t.get("model", ""),
+                "platform": plat, "platform_label": self.tv.PLATFORMS.get(plat, {}).get("label", plat),
+                "caps": self.tv.PLATFORMS.get(plat, {}).get("caps", []),
                 "presets": t.get("presets", []), "launcher": prof["home"].get("launcher"),
                 "runs": len(runs), "last_run": last and {k: last.get(k) for k in
                                                         ("id", "mode", "outcome", "finished", "source")},
@@ -330,7 +334,8 @@ class App:
         names = self.profiles()
         with ThreadPoolExecutor(max_workers=8) as pool:
             summaries = list(pool.map(self.tv_summary, names))
-            online = list(pool.map(lambda s: _port_open(s["host"], s["port"]), summaries))
+            online = list(pool.map(lambda s: _port_open(s["host"], s["port"] or 80) or
+                                   (s["platform"] != "adb" and _port_open(s["host"], 7681)), summaries))
         for s, on in zip(summaries, online):
             s["online"] = on
         return {"tvs": summaries, "ui_port": self.tv.UI_PORT, "viewers": len(self.bus.subs),
@@ -347,6 +352,8 @@ class App:
 
     def ctx(self, name):
         prof = self.tv.load_profile(name)
+        if self.tv.platform_of(prof) != "adb":
+            raise self.tv.TvError(f"needs ADB; {name} is a {self.tv.PLATFORMS[self.tv.platform_of(prof)]['label']}")
         dev = self.tv.Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
         dev.connect(wait=5)
         ctx = self.tv.Ctx(prof, dev)
@@ -380,7 +387,11 @@ class App:
         dossier = self.tv.load_dossier(name)
         gpath = self.tv.guide_path(name)
         guide = json.loads(gpath.read_text()) if gpath.exists() else None
-        if build and (guide is None or dossier is None):
+        prof = self.tv.load_profile(name)
+        if build and (guide is None or dossier is None) and self.tv.platform_of(prof) != "adb":
+            dossier = dossier or self.tv.discover_network(prof)
+            guide = self.tv.network_guide(prof)
+        elif build and (guide is None or dossier is None):
             ctx = self.ctx(name)
             dossier = dossier or self.tv.discover(ctx)
             guide = self.tv.load_guide(ctx)
@@ -389,12 +400,16 @@ class App:
     def research(self, name):
         view = self.prepare_view(name)
         d = view["dossier"]
+        if d.get("platform", "adb") != "adb":
+            facts = (f"{d.get('brand')} {d.get('model') or d.get('name')}, platform {d.get('platform_label')} (no ADB; "
+                     f"UPnP: {', '.join(u.get('description') or u.get('type', '') for u in d.get('upnp', []))})")
+        else:
+            facts = (f"{d['brand']} {d['model']} ({d['props'].get('ro.product.name')}), Android {d['android']}, "
+                     f"firmware {d['firmware']}, patch {d['security_patch']}, SoC {d['soc']}, {d['ram_mb']} MB RAM, "
+                     f"tuner: {bool(d['live_tv']['tuner_inputs'])}, Play Store: {d['play_store']}")
         text = (f"Research how to prepare this TV for the tv-override workflow and write a model-specific guide "
-                f"(prompts/prepare-tv.md, then `./tvctl guide set {name} <file>`). TV: {d['brand']} {d['model']} "
-                f"({d['props'].get('ro.product.name')}), Android {d['android']}, firmware {d['firmware']}, "
-                f"patch {d['security_patch']}, SoC {d['soc']}, {d['ram_mb']} MB RAM, tuner: "
-                f"{bool(d['live_tv']['tuner_inputs'])}, Play Store: {d['play_store']}, presets: {', '.join(d['presets'])}. "
-                f"Full data: state/{name}/dossier.json. Current guide: state/{name}/guide.json.")
+                f"(prompts/prepare-tv.md, then `./tvctl guide set {name} <file>`). TV: {facts}, presets: "
+                f"{', '.join(d.get('presets', []))}. Full data: state/{name}/dossier.json. Current guide: state/{name}/guide.json.")
         item = self.desk.inbox_add({"tv": name, "topic": "prepare", "text": text})
         guide = view["guide"]
         guide["research"] = {"requested": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "inbox": item["id"]}
@@ -414,6 +429,8 @@ class App:
             if cached and time.time() - cached[0] < 0.8:
                 return cached
             prof = self.tv.load_profile(name)
+            if self.tv.platform_of(prof) != "adb":
+                raise self.tv.TvError("no screenshots on this TV (not Android)")
             dev = self.tv.Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
             started = time.time()
             png = dev.screencap()
@@ -623,6 +640,10 @@ def make_handler(app):
                     return app.keys_view(name)
                 if name and sub == "/prepare":
                     return app.prepare_view(name, build=query.get("build") != ["0"])
+                if name and sub == "/dial":
+                    prof = tv.load_profile(name)
+                    apps = tv.roku_apps(prof) if tv.platform_of(prof) == "roku" else tv.dial_apps(prof)
+                    return {"apps": apps, "caps": tv.platform_caps(prof)}
                 if name and sub == "/store":
                     return tv.store_view(app.ctx(name))
                 if path == "/api/catalog":
@@ -666,7 +687,8 @@ def make_handler(app):
                 if path == "/api/pair":
                     return {"output": tv.adb_pair(str(body.get("host", "")), int(body.get("port", 0)), body.get("code", ""))}
                 if path == "/api/init":
-                    data = tv.init_tv(body["name"], body["host"], int(body.get("port", 5555)), wait=90)
+                    data = tv.init_tv(body["name"], body["host"], int(body.get("port", 5555)), wait=90,
+                                      platform=body.get("platform", "auto"))
                     app.bus.publish({"type": "log", "tv": data["name"], "level": "info",
                                      "msg": f"new TV {data['name']}: {data['model']}"})
                     return data
@@ -713,11 +735,14 @@ def make_handler(app):
                                                 if k in body})
                     return {"ok": True}
                 if name and sub == "/discover":
-                    d = tv.discover(app.ctx(name))
+                    prof = tv.load_profile(name)
+                    d = tv.discover_network(prof) if tv.platform_of(prof) != "adb" else tv.discover(app.ctx(name))
                     app.bus.publish({"type": "prepare", "tv": name, "what": "dossier"})
                     return d
                 if name and sub == "/guide/rebuild":
-                    g = tv.load_guide(app.ctx(name), rebuild=True)
+                    prof = tv.load_profile(name)
+                    g = (tv.network_guide(prof, rebuild=True) if tv.platform_of(prof) != "adb"
+                         else tv.load_guide(app.ctx(name), rebuild=True))
                     app.bus.publish({"type": "prepare", "tv": name, "what": "guide"})
                     return g
                 if name and sub == "/guide/research":
@@ -735,6 +760,21 @@ def make_handler(app):
                         g = tv.guide_step_action(app.ctx(name), gm.group(1), gm.group(2))
                     app.bus.publish({"type": "prepare", "tv": name, "what": "guide"})
                     return g
+                dm = re.fullmatch(r"/dial/([A-Za-z0-9+._-]{1,40})/(launch|stop)", sub or "")
+                if name and dm:
+                    prof = tv.load_profile(name)
+                    if tv.platform_of(prof) == "roku":
+                        req = urllib.request.Request(f"http://{prof['tv']['host']}:8060/launch/{dm.group(1)}", data=b"", method="POST")
+                        urllib.request.urlopen(req, timeout=5).read()
+                    else:
+                        tv.dial_control(prof, dm.group(1), dm.group(2))
+                    return {"ok": True}
+                if name and sub == "/key":
+                    key = str(body.get("key", ""))
+                    if not re.fullmatch(r"[a-z]{2,8}", key):
+                        raise tv.TvError("bad key")
+                    tv.send_key(tv.load_profile(name), key)
+                    return {"ok": True}
                 if name and sub == "/measure":
                     return app.measure(name)
                 if name and sub == "/apps":

@@ -369,3 +369,7 @@ textarea.ta { width: 100%; min-height: 80px; background: var(--surface-2); borde
 .crumbs span { border: 1px solid var(--border-strong); border-radius: 3px; padding: 2px 7px; background: var(--surface); }
 .crumbs i { color: var(--muted); font-style: normal; }
 .how { white-space: pre-wrap; margin-top: 4px; }
+
+/* ---------- remote pad (TVs with network keys) ---------- */
+.pad { display: grid; grid-template-columns: repeat(4, 64px); gap: 6px; }
+.pad .btn { height: 44px; padding: 0; font-size: 13px; }

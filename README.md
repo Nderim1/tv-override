@@ -66,6 +66,27 @@ On the TV: Settings → System → About → click "Build" 7× → Developer opt
 Or ask your agent (Codex, Claude Code, …): "set up the TV at 192.168.1.50". It follows `AGENTS.md` →
 `prompts/workflow.md` (also available as the `tv-setup` skill).
 
+## TVs without Android
+
+The scan recognises the platform of every TV (UPnP/DIAL descriptions + port fingerprints) and a profile has
+`[tv].platform`. Only Android TVs (Google TV, Android TV, Fire TV) have ADB and get the full workflow.
+
+| Platform | Examples | What tvctl can do |
+|---|---|---|
+| `adb` | TCL / Sony / Philips Google TV, Fire TV, Android projectors | everything |
+| `vestel` | JVC, Hitachi, Telefunken, Finlux, Toshiba (Vestel OS + Vewd store) | launch/stop YouTube, Netflix, Prime Video (DIAL); remote keys if the TV opens port 4660; guided privacy walkthrough |
+| `roku` | Roku TVs | list/launch channels, remote keys (ECP, untested) |
+| `webos`, `tizen` | LG, Samsung | DIAL app launch, guided walkthrough |
+
+```bash
+./tvctl init jvc-tv --host 10.165.138.127     # platform detected automatically
+./tvctl dial jvc-tv                             # apps and whether they run
+./tvctl dial jvc-tv launch YouTube
+./tvctl key jvc-tv home                         # where the platform allows network keys
+```
+
+For the full workflow on such a TV, add an Android / Google TV stick on HDMI as its own profile.
+
 ## Pick what a run does
 
 A run is any combination of steps. Each step pulls in what it needs, so nothing half-done can happen
