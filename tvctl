@@ -1876,10 +1876,16 @@ def write_keys(prof, keys):
     path.write_text(text)
 
 
-# Keys that keep the TV usable: arrows, OK/enter, back, home, volume, mute, power.
+# Keys that keep the TV usable: navigation, volume, power, and everything live TV needs
+# (channels, digits, guide, info, teletext/colour keys, audio/subtitles, last channel).
 PROTECTED_KEYS = {103: "Up", 108: "Down", 105: "Left", 106: "Right", 28: "Enter", 352: "OK", 353: "OK",
                   158: "Back", 102: "Home", 172: "Home", 114: "Volume down", 115: "Volume up", 113: "Mute",
-                  116: "Power", 142: "Sleep"}
+                  116: "Power", 142: "Sleep",
+                  402: "Channel up", 403: "Channel down", 405: "Last channel", 365: "Guide", 358: "Info",
+                  377: "TV", 388: "Teletext", 392: "Audio track", 370: "Subtitles",
+                  398: "Red", 399: "Green", 400: "Yellow", 401: "Blue",
+                  11: "0", **{n + 1: str(n) for n in range(1, 10)},
+                  **{512 + n: str(n) for n in range(10)}}
 
 
 def launch_targets(ctx):

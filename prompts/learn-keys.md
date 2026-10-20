@@ -26,6 +26,12 @@ The owner can do all of this themselves in the dashboard (section "remote button
 6. Add newly learned buttons for this remote model to the brand preset's `[remote_keys]` so the next TV of that
    brand shows labels during capture.
 
+## Protected keys
+
+Navigation, volume, power and every live-TV key (channel up/down, digits, guide, info, last channel,
+teletext/colour keys, audio/subtitles) can never be remapped, in the CLI or the dashboard. Remap only app
+shortcut keys (Netflix, YouTube, Prime Video, Settings, …).
+
 ## Finding intent actions
 
 An app's public actions: `adb shell dumpsys package <pkg>` → look for activities with `Action:` lines and
