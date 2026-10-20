@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """tvctl – profile-driven setup of Android / Google TVs over ADB.
 
-  tvctl find                              find TVs on the network
+  tvctl find [--all] [--update]          find TVs (ADB, wireless debugging, Cast, mDNS), match known TVs
+  tvctl pair IP:PORT CODE                 pair with wireless debugging (Android 11+)
   tvctl init NAME --host IP               connect, detect, snapshot, write profiles/NAME.toml
   tvctl inventory PROFILE [--class unknown] [--mem]
   tvctl plan PROFILE                      what apply would change
@@ -2348,13 +2349,33 @@ def cmd_keys(args):
 
 # ---- find / init
 
+PRIVATE_PREFIXES = ("10.", "192.168.", *(f"172.{n}." for n in range(16, 32)))
+TV_PORTS = [5555, 6466, 8008, 8060]
+# Ports that tell other devices apart, probed only on hosts that answer ping.
+ID_PORTS = {62078: "iPhone / iPad", 53: "router", 445: "computer", 22: "computer", 548: "Mac",
+            7000: "AirPlay device", 631: "printer", 9100: "printer", 80: "web interface"}
+
+
 def local_networks():
-    nets = {"192.168.0.0/24", "192.168.1.0/24"}
+    """/24s of this computer's interfaces plus private networks upstream (e.g. a modem behind the router)."""
+    nets = set()
     _, out, _ = run(["ifconfig"], timeout=10) if shutil.which("ifconfig") else (0, "", "")
-    for m in re.finditer(r"inet (\d+\.\d+\.\d+)\.\d+ ", out):
-        if not m.group(1).startswith("127."):
+    if not out and shutil.which("ip"):
+        _, out, _ = run(["ip", "-4", "addr"], timeout=10)
+    for m in re.finditer(r"inet (\d+\.\d+\.\d+)\.\d+", out):
+        if m.group(1).startswith(PRIVATE_PREFIXES):
             nets.add(f"{m.group(1)}.0/24")
-    return sorted(nets)
+    if shutil.which("traceroute"):  # double NAT: the modem's network is a hop or two away
+        _, out, _ = run(["traceroute", "-n", "-m", "3", "-w", "1", "-q", "1", "1.1.1.1"], timeout=15)
+        for m in re.finditer(r"^\s*\d+\s+(\d+\.\d+\.\d+)\.\d+", out, re.M):
+            if m.group(1).startswith(PRIVATE_PREFIXES):
+                nets.add(f"{m.group(1)}.0/24")
+    return sorted(nets or {"192.168.0.0/24", "192.168.1.0/24"})
+
+
+def own_ips():
+    _, out, _ = run(["ifconfig"], timeout=10) if shutil.which("ifconfig") else (0, "", "")
+    return set(re.findall(r"inet (\d+\.\d+\.\d+\.\d+)", out))
 
 
 def probe(host, ports, timeout=0.5):
@@ -2368,6 +2389,14 @@ def probe(host, ports, timeout=0.5):
     return host, open_
 
 
+def ping(host):
+    flag = ["-t", "1"] if sys.platform == "darwin" else ["-W", "1"]
+    try:
+        return subprocess.run(["ping", "-c", "1", *flag, host], capture_output=True, timeout=3).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def cast_name(host):
     try:
         with urllib.request.urlopen(f"http://{host}:8008/setup/eureka_info?params=name", timeout=1.5) as r:
@@ -2376,32 +2405,180 @@ def cast_name(host):
         return None
 
 
-def find_tvs(cidrs=None):
-    ports = [5555, 6466, 8008, 8060]
+def arp_table():
+    _, out, _ = run(["arp", "-an"], timeout=10) if shutil.which("arp") else (0, "", "")
+    return {m.group(1): m.group(2) for m in re.finditer(r"\((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-f:]{11,17})", out)}
+
+
+def mdns_tvs(seconds=2.5):
+    """TVs announcing themselves on the local network: ADB wireless debugging, Cast, Android TV remote."""
+    found = {}
+    adb = find_adb()
+    _, out, _ = run([adb, "mdns", "services"], timeout=10)
+    for m in re.finditer(r"^(\S+)\s+(_adb-tls-(?:connect|pairing)\._tcp)\.?\s+(\d+\.\d+\.\d+\.\d+):(\d+)", out, re.M):
+        entry = found.setdefault(m.group(3), {"names": set(), "services": {}})
+        entry["names"].add(m.group(1))
+        entry["services"][m.group(2)] = int(m.group(4))
+    if not shutil.which("dns-sd"):
+        return found
+    for svc in ("_googlecast._tcp", "_androidtvremote2._tcp", "_adb-tls-connect._tcp"):
+        names = mdns_browse(svc, seconds)
+        for name in names[:8]:
+            host = mdns_resolve(name, svc)
+            if host:
+                entry = found.setdefault(host[0], {"names": set(), "services": {}})
+                entry["names"].add(name)
+                entry["services"].setdefault(svc, host[1])
+    return found
+
+
+def _timed(cmd, seconds):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=seconds)
+        return p.stdout
+    except subprocess.TimeoutExpired as e:  # dns-sd never exits by itself; we read what it printed
+        return (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+
+
+def mdns_browse(svc, seconds):
+    out = _timed(["dns-sd", "-B", svc, "local."], seconds)
+    return sorted({m.group(1).strip() for m in re.finditer(rf"\sAdd\s+\d+\s+\d+\s+local\.\s+{re.escape(svc)}\.\s+(.+)$", out, re.M)})
+
+
+def mdns_resolve(name, svc):
+    out = _timed(["dns-sd", "-L", name, svc, "local."], 2)
+    m = re.search(r"can be reached at (\S+?)\.?:(\d+)", out)
+    if not m:
+        return None
+    out = _timed(["dns-sd", "-G", "v4", m.group(1)], 2)
+    ip = re.search(r"\s(\d+\.\d+\.\d+\.\d+)\s", out)
+    return (ip.group(1), int(m.group(2))) if ip else None
+
+
+def adb_serial(host, port):
+    """Serial of an ADB device we can already talk to (no prompt), else None."""
+    adb = find_adb()
+    run([adb, "connect", f"{host}:{port}"], timeout=8)
+    code, out, _ = run([adb, "-s", f"{host}:{port}", "shell", "getprop ro.serialno"], timeout=8)
+    serial = out.strip()
+    return serial if code == 0 and serial and "error" not in serial.lower() else None
+
+
+def classify_device(host, ports, mdns, gateway_hosts):
+    svcs = mdns.get("services", {})
+    if 8060 in ports:
+        return "Roku (not supported: no ADB)", False
+    if 5555 in ports:
+        return "Android TV · ADB on", True
+    if "_adb-tls-connect._tcp" in svcs or "_adb-tls-pairing._tcp" in svcs:
+        return "Android TV · wireless debugging (pair with code)", True
+    if {6466, 8008} & set(ports) or {"_googlecast._tcp", "_androidtvremote2._tcp"} & set(svcs):
+        return "Android/Google TV · ADB off", True
+    if host in gateway_hosts or {53, 80} <= set(ports):
+        return "router / modem", False
+    for port, label in ID_PORTS.items():
+        if port in ports:
+            return label, False
+    return "unknown device", False
+
+
+def find_tvs(cidrs=None, identify=True):
+    """Every device on the scanned networks, TVs first. TVs also come from mDNS and get matched to profiles."""
     nets = cidrs or local_networks()
     hosts = [str(h) for net in nets for h in ip_network(net, strict=False).hosts()]
+    mine = own_ips()
+    hosts = [h for h in hosts if h not in mine]
     with ThreadPoolExecutor(max_workers=256) as pool:
-        results = [r for r in pool.map(lambda h: probe(h, ports), hosts) if r[1]]
+        tv_ports = dict(pool.map(lambda h: probe(h, TV_PORTS), hosts))
+        alive = {h for h, ok in zip(hosts, pool.map(ping, hosts)) if ok}
+    mdns = mdns_tvs()
+    arp = arp_table()
+    candidates = sorted(alive | {h for h, p in tv_ports.items() if p} | set(mdns), key=lambda h: tuple(map(int, h.split("."))))
+    with ThreadPoolExecutor(max_workers=64) as pool:
+        id_ports = dict(pool.map(lambda h: probe(h, list(ID_PORTS)), candidates)) if identify else {}
+    gateways = {n.replace("0/24", "1") for n in nets}
+    profiles = {}
+    for path in PROFILES_DIR.glob("*.toml"):
+        try:
+            t = load_toml(path).get("tv", {})
+            profiles[path.stem] = t
+        except Exception:
+            pass
     found = []
-    for host, open_ in results:
-        kind = ("Roku – not supported (no ADB)" if 8060 in open_ else
-                "Android/Google TV" if {6466, 8008} & set(open_) else "ADB device")
-        found.append({"host": host, "ports": open_, "kind": kind, "adb_enabled": 5555 in open_,
-                      "name": cast_name(host) if 8008 in open_ else None})
+    for host in candidates:
+        ports = sorted(set(tv_ports.get(host, [])) | set(id_ports.get(host, [])))
+        md = mdns.get(host, {})
+        kind, is_tv = classify_device(host, ports, md, gateways)
+        tls = md.get("services", {}).get("_adb-tls-connect._tcp")
+        adb_port = 5555 if 5555 in ports else tls
+        item = {"host": host, "ports": ports, "kind": kind, "tv": is_tv, "adb_enabled": 5555 in ports,
+                "adb_port": adb_port, "pairing": bool(tls) and 5555 not in ports,
+                "name": (cast_name(host) if 8008 in ports else None) or (sorted(md.get("names", [])) or [None])[0],
+                "mac": arp.get(host), "profile": None, "moved_from": None}
+        for pname, t in profiles.items():
+            if t.get("host") == host:
+                item["profile"] = pname
+        if is_tv and adb_port and not item["profile"]:
+            serial = adb_serial(host, adb_port)
+            for pname, t in profiles.items():
+                if serial and t.get("serial") == serial:
+                    item.update(profile=pname, moved_from=f"{t.get('host')}:{t.get('port', 5555)}")
+        found.append(item)
+    found.sort(key=lambda f: (not f["tv"], tuple(map(int, f["host"].split(".")))))
     return nets, found
+
+
+def set_tv_address(profile, host, port=5555):
+    """A known TV got a new IP (DHCP): point its profile at the new address."""
+    if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", host):
+        raise TvError("host must be an IPv4 address")
+    prof = load_profile(profile)
+    text = set_toml_value(prof["_path"].read_text(), "tv", "host", host)
+    text = set_toml_value(text, "tv", "port", int(port))
+    tomllib.loads(text)
+    prof["_path"].write_text(text)
+
+
+def adb_pair(host, port, code):
+    """Android 11+ wireless debugging: pair once with the 6-digit code shown on the TV."""
+    if not re.fullmatch(r"\d{6}", str(code)):
+        raise TvError("the pairing code has 6 digits")
+    _, out, err = run([find_adb(), "pair", f"{host}:{int(port)}", str(code)], timeout=30)
+    if "Successfully paired" not in out + err:
+        raise TvError((out + err).strip()[-200:] or "pairing failed")
+    return (out + err).strip()
 
 
 def cmd_find(args):
     if not args.json:
-        print(f"Scanning {', '.join(args.cidr or local_networks())}…", file=sys.stderr)
-    _, found = find_tvs(args.cidr)
+        print(f"Scanning {', '.join(args.cidr or local_networks())} (+ mDNS)…", file=sys.stderr)
+    nets, found = find_tvs(args.cidr)
     def human():
-        if not found:
-            print("No TVs found. Is the TV on and on a network this computer can reach?")
-        for f in found:
-            print(f"  {f['host']:<16} {f['kind']:<32} {f['name'] or '':<24} "
-                  f"{'ADB on' if f['adb_enabled'] else 'ADB off: enable Developer options > USB debugging'}")
-    emit(args, found, human)
+        tvs = [f for f in found if f["tv"]]
+        others = [f for f in found if not f["tv"]]
+        if not tvs:
+            print("No TV found. Is it switched on (not standby)? Same network or one hop behind the router?")
+        for f in tvs:
+            where = f"{f['host']}:{f['adb_port']}" if f["adb_port"] else f["host"]
+            print(f"  {where:<22} {f['kind']:<48} {f['name'] or '':<22}"
+                  + (f" profile {f['profile']}" if f["profile"] else "")
+                  + (f" (moved from {f['moved_from']}: tvctl find --update)" if f["moved_from"] else ""))
+        if others:
+            print(f"\n{len(others)} other device(s):" + ("" if args.all else " (--all to list)"))
+            for f in others if args.all else []:
+                print(f"  {f['host']:<16} {f['kind']:<22} ports {f['ports']}")
+        if args.update:
+            for f in tvs:
+                if f["moved_from"]:
+                    set_tv_address(f["profile"], f["host"], f["adb_port"])
+                    print(f"✓ {f['profile']}: address updated to {f['host']}:{f['adb_port']}")
+    emit(args, {"networks": nets, "found": found}, human)
+    return EXIT_OK
+
+
+def cmd_pair(args):
+    host, _, port = args.address.partition(":")
+    print(adb_pair(host, port or 0, args.code))
     return EXIT_OK
 
 
@@ -2500,8 +2677,13 @@ def main():
         p.set_defaults(fn=fn)
         return p
 
-    p = add("find", cmd_find, "find TVs on the network", profile=False)
+    p = add("find", cmd_find, "find TVs (and list other devices) on the network", profile=False)
     p.add_argument("--cidr", action="append", help="network to scan, e.g. 192.168.1.0/24 (repeatable)")
+    p.add_argument("--all", action="store_true", help="also list devices that are not TVs")
+    p.add_argument("--update", action="store_true", help="update profiles of known TVs that got a new IP")
+    p = add("pair", cmd_pair, "pair with a TV's wireless debugging (Android 11+)", profile=False)
+    p.add_argument("address", help="IP:PORT shown under 'Pair device with pairing code' on the TV")
+    p.add_argument("code", help="6-digit pairing code shown on the TV")
     p = add("init", cmd_init, "connect a new TV and write its profile", profile=False)
     p.add_argument("name")
     p.add_argument("--host", required=True)

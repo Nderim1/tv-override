@@ -658,11 +658,13 @@ def make_handler(app):
                     app.ingest(body)
                     return {"ok": True}
                 if path == "/api/find":
-                    nets, found = tv.find_tvs(body.get("cidr") or None)
-                    known = {s["host"]: s["name"] for s in app.state()["tvs"]}
-                    for f in found:
-                        f["profile"] = known.get(f["host"])
+                    cidr = body.get("cidr") or None
+                    if cidr and not all(re.fullmatch(r"\d+\.\d+\.\d+\.\d+/(2[4-9]|3[0-2])", c) for c in cidr):
+                        raise tv.TvError("networks must look like 192.168.1.0/24 (at most 256 addresses each)")
+                    nets, found = tv.find_tvs(cidr)
                     return {"networks": nets, "found": found}
+                if path == "/api/pair":
+                    return {"output": tv.adb_pair(str(body.get("host", "")), int(body.get("port", 0)), body.get("code", ""))}
                 if path == "/api/init":
                     data = tv.init_tv(body["name"], body["host"], int(body.get("port", 5555)), wait=90)
                     app.bus.publish({"type": "log", "tv": data["name"], "level": "info",
@@ -703,6 +705,9 @@ def make_handler(app):
                     else:
                         entry["open"] = body.get("open", "")
                     return app.save_key(name, scan, entry)
+                if name and sub == "/address":
+                    tv.set_tv_address(name, str(body.get("host", "")), int(body.get("port", 5555)))
+                    return {"ok": True}
                 if name and sub == "/home":
                     tv.set_home_settings(name, {k: body[k] for k in ("launcher", "screensaver", "animation_scale")
                                                 if k in body})

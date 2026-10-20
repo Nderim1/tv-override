@@ -405,7 +405,7 @@ function renderHead() {
           <button class="btn" data-action="run" data-mode="verify" ${dis}>REBOOT &amp; VERIFY</button>
           ${running && !cli ? '<button class="btn btn-danger" data-action="stop">■ STOP</button>' : ''}
         </div>
-        ${!on ? '<span class="hint">TV unreachable: is it on, and is USB debugging enabled?</span>' : ''}
+        ${!on ? '<span class="hint">TV unreachable: switched off or in standby? If it got a new address, + ADD TV › SCAN finds it and offers to update this profile.</span>' : ''}
       </div>
     </div>
     <details class="profile" style="margin-top:12px"><summary>profile · profiles/${esc(sum.name)}.toml</summary>
@@ -1195,19 +1195,53 @@ function restoreModal() {
 }
 
 function addTvModal(found = null, scanning = false, nets = []) {
+  const tvs = (found || []).filter((f) => f.tv), others = (found || []).filter((f) => !f.tv);
+  const tvRow = (f) => {
+    let action;
+    if (f.moved_from) action = `<button class="btn btn-sm btn-primary" data-action="move-tv" data-tv="${esc(f.profile)}" data-host="${esc(f.host)}" data-port="${f.adb_port}">UPDATE ADDRESS of ${esc(f.profile)}</button>`;
+    else if (f.profile) action = `<span class="hint">already added: ${esc(f.profile)}</span>`;
+    else if (f.pairing) action = `<button class="btn btn-sm btn-cyan" data-action="pair-start" data-host="${esc(f.host)}" data-port="${f.adb_port}">PAIR</button>`;
+    else if (f.adb_enabled) action = `<button class="btn btn-sm" data-action="pick-host" data-host="${esc(f.host)}" data-port="${f.adb_port}">USE</button>`;
+    else action = '<span class="hint">turn on USB or Wireless debugging first</span>';
+    const adb = f.adb_enabled ? '<span class="st st-done">✓ ADB on</span>' : f.pairing ? '<span class="st st-manual">⚿ needs pairing</span>' : '<span class="st st-manual">⚠ ADB off</span>';
+    return `<tr><td class="mono">${esc(f.host)}${f.adb_port && f.adb_port !== 5555 ? ':' + f.adb_port : ''}</td><td>${esc(f.kind)}</td><td>${esc(f.name || '')}</td><td>${adb}</td>
+      <td style="text-align:right">${action}${f.moved_from ? `<div class="hint">was ${esc(f.moved_from)}: the TV got a new address</div>` : ''}</td></tr>`;
+  };
   modal(`<h2>+ Add a TV</h2>
-    <p>On the TV: <b>Settings → System → About</b> → click <b>Build</b> 7× → back to <b>System → Developer options</b> → <b>USB debugging</b> on.</p>
-    <div class="row"><button class="btn" data-action="scan" ${scanning ? 'disabled' : ''}>${scanning ? '<span class="spin">◌</span> SCANNING NETWORK…' : '⌕ SCAN NETWORK'}</button>
-    ${nets.length ? `<span class="hint">scanned ${esc(nets.join(', '))}</span>` : ''}</div>
-    ${found ? (found.length ? `<div class="table-wrap" style="margin-top:10px;max-height:220px"><table class="t"><thead><tr><th>ip</th><th>kind</th><th>name</th><th>adb</th><th></th></tr></thead><tbody>
-      ${found.map((f) => `<tr><td>${esc(f.host)}</td><td>${esc(f.kind)}</td><td>${esc(f.name || '')}</td><td>${f.adb_enabled ? '<span class="st st-done">✓ on</span>' : '<span class="st st-manual">⚠ off</span>'}</td>
-      <td>${f.profile ? `<span class="hint">profile: ${esc(f.profile)}</span>` : `<button class="btn btn-sm" data-action="pick-host" data-host="${esc(f.host)}">USE</button>`}</td></tr>`).join('')}</tbody></table></div>`
-      : '<div class="empty">Nothing found. TV on? Same network? You can still type the IP (Settings → Network on the TV).</div>') : ''}
-    <div class="field"><label for="new-host">TV IP address</label><input id="new-host" placeholder="192.168.1.50" autocomplete="off"></div>
+    <p>On the TV: <b>Settings → System → About</b> → click <b>Build</b> 7× → back to <b>System → Developer options</b> → turn on <b>USB debugging</b>
+      (or <b>Wireless debugging</b> on newer TVs). The TV must be switched on, not in standby.</p>
+    <div class="row"><button class="btn" data-action="scan" ${scanning ? 'disabled' : ''}>${scanning ? '<span class="spin">◌</span> SCANNING (~20 s)…' : '⌕ SCAN NETWORK'}</button>
+    ${nets.length ? `<span class="hint">scanned ${esc(nets.join(', '))} + mDNS</span>` : ''}</div>
+    ${found ? (tvs.length ? `<div class="table-wrap" style="margin-top:10px;max-height:240px"><table class="t"><thead><tr><th>address</th><th>kind</th><th>name</th><th>adb</th><th></th></tr></thead><tbody>
+      ${tvs.map(tvRow).join('')}</tbody></table></div>`
+      : `<div class="alert" style="animation:none;margin-top:10px;padding:12px 14px"><b class="st st-manual">⚠ No TV answered.</b>
+        <ul class="hint" style="margin:6px 0 0;padding-left:18px">
+          <li>Is the TV fully on? Most TVs switch the network off in standby (TCL: turn on <i>Network standby</i>).</li>
+          <li>Is it on this network, or one hop behind the router? Scanned: ${esc(nets.join(', '))}.</li>
+          <li>Is <i>USB debugging</i> or <i>Wireless debugging</i> on? Without it the TV is only found if it announces Cast.</li>
+          <li>Type the TV's IP below (TV: Settings → Network → status).</li></ul></div>`) : ''}
+    ${others.length ? `<details style="margin-top:8px"><summary class="hint">${others.length} other device(s) on the network</summary>
+      <table class="t"><tbody>${others.map((f) => `<tr><td class="mono">${esc(f.host)}</td><td>${esc(f.kind)}</td><td class="hint">ports ${esc(f.ports.join(', ') || 'none open')}</td>
+      <td style="text-align:right"><button class="btn btn-sm btn-ghost" data-action="pick-host" data-host="${esc(f.host)}" data-port="5555">TRY</button></td></tr>`).join('')}</tbody></table></details>` : ''}
+    <div id="pair-box"></div>
+    <div class="row">
+      <div class="field" style="flex:2"><label for="new-host">TV IP address</label><input id="new-host" placeholder="192.168.1.50" autocomplete="off"></div>
+      <div class="field" style="flex:1"><label for="new-port">ADB port</label><input id="new-port" value="5555" inputmode="numeric" autocomplete="off"></div>
+    </div>
     <div class="field"><label for="new-name">name (room-brand)</label><input id="new-name" placeholder="kitchen-sony" autocomplete="off"></div>
     <p class="hint" id="init-status"></p>
     <div class="row" style="justify-content:flex-end"><button class="btn" data-action="modal-close">CANCEL</button>
     <button class="btn btn-primary" data-action="init">CONNECT &amp; CREATE PROFILE</button></div>`);
+}
+
+function pairBox(host, connectPort) {
+  $('#pair-box').innerHTML = `<div class="agent-card" style="margin:10px 0">
+    <div class="who">⚿ PAIR WITH ${esc(host)}</div>
+    <div class="body">On the TV: <b>Developer options → Wireless debugging → Pair device with pairing code</b>. Type the 6-digit code and the port shown there (it is different from ${connectPort}).</div>
+    <div class="row"><div class="field" style="flex:1"><label for="pair-port">pairing port</label><input id="pair-port" inputmode="numeric"></div>
+    <div class="field" style="flex:1"><label for="pair-code">6-digit code</label><input id="pair-code" inputmode="numeric" maxlength="6"></div></div>
+    <button class="btn btn-cyan" data-action="pair-go" data-host="${esc(host)}" data-port="${connectPort}">PAIR</button></div>`;
+  $('#pair-port').focus();
 }
 
 /* ------------------------------------------------------------------ actions */
@@ -1362,16 +1396,31 @@ document.addEventListener('click', async (e) => {
     else if (a === 'add-tv') addTvModal();
     else if (a === 'scan') {
       addTvModal(null, true);
-      const r = await post('/api/find', {});
-      addTvModal(r.found, false, r.networks);
-    } else if (a === 'pick-host') { $('#new-host').value = t.dataset.host; $('#new-name').focus(); }
+      try {
+        const r = await post('/api/find', {});
+        addTvModal(r.found, false, r.networks);
+      } catch (err) { addTvModal(null, false); toast(err.message, true); }
+    } else if (a === 'pick-host') { $('#new-host').value = t.dataset.host; $('#new-port').value = t.dataset.port || 5555; $('#new-name').focus(); }
+    else if (a === 'pair-start') pairBox(t.dataset.host, t.dataset.port);
+    else if (a === 'pair-go') {
+      t.disabled = true;
+      try {
+        await post('/api/pair', { host: t.dataset.host, port: +$('#pair-port').value, code: $('#pair-code').value.trim() });
+        $('#pair-box').innerHTML = '<p class="st st-done">✓ paired. Now give it a name and connect.</p>';
+        $('#new-host').value = t.dataset.host; $('#new-port').value = t.dataset.port; $('#new-name').focus();
+      } catch (err) { toast(err.message, true); t.disabled = false; }
+    } else if (a === 'move-tv') {
+      await post(`/api/tv/${t.dataset.tv}/address`, { host: t.dataset.host, port: +t.dataset.port });
+      closeModal(); toast(`${t.dataset.tv} now at ${t.dataset.host}`);
+      await loadState(); selectTv(t.dataset.tv);
+    }
     else if (a === 'init') {
-      const host = $('#new-host').value.trim(), name = $('#new-name').value.trim();
+      const host = $('#new-host').value.trim(), name = $('#new-name').value.trim(), port = +($('#new-port').value || 5555);
       if (!host || !name) { toast('IP and name are required', true); return; }
       t.disabled = true;
       $('#init-status').innerHTML = '<span class="spin">◌</span> connecting… if the TV shows <b>Allow USB debugging?</b>, tick "Always allow" and press Allow.';
       try {
-        const r = await post('/api/init', { host, name });
+        const r = await post('/api/init', { host, name, port });
         closeModal(); toast(`added ${r.name}: ${r.model}`);
         await loadState(); selectTv(r.name);
       } catch (err) { $('#init-status').textContent = '✖ ' + err.message; t.disabled = false; }
