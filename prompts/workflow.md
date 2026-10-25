@@ -80,6 +80,11 @@ line to one line so the plot gets two, and Projectivy settings › Appearance �
 availability or quality (that would query the add-on's scrapers); quality is the add-on's own setting. Adult
 content: `exclude_ratings` (US certificate from the add-on's metadata); unrated films are kept.
 
+Live TV / radio channels: channel packs in `channels/` (`kosovo` = Kosovo TV & radio). `[kodi].packs` in the
+profile, `./tvctl install <name> kosovo` or the dashboard's app store adds one; that installs Kodi (Play Store,
+the owner taps Install) and Kodi Rows, then pushes the rows. `uninstall <name> kosovo` removes only the rows.
+A new pack: the same `[[rows]]` / `[[rows.channels]]` as `[[kodi.rows]]`, checked streams only (kodi-rows/README.md).
+
 ## Keep the repo learning
 
 Brand facts → `presets/`, app facts → `apps.toml`, new failure modes → `prompts/diagnose.md`.

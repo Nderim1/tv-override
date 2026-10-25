@@ -1165,24 +1165,26 @@ function renderStore() {
   if (!St) { el.innerHTML = head + '<div class="empty"><span class="spin">◌</span> checking which apps are on the TV…</div>'; return; }
   const dis = busy ? 'disabled' : '';
   const card = (a) => {
+    const pack = a.source === 'channels';
     const update = a.installed && a.source === 'apk' && a.catalog_version && a.version && a.version !== a.catalog_version;
     return `<div class="store-card ${a.installed ? 'is-installed' : ''}">
       <div class="row" style="justify-content:space-between"><b>${esc(a.name)}</b>
-        <span class="chip ${a.source === 'apk' ? 'accent' : ''}">${a.source === 'apk' ? '✓ verified APK' : 'Play Store'}</span></div>
-      <div class="pkg-note">${esc(a.package)}</div>
+        <span class="chip ${a.source === 'apk' ? 'accent' : ''}">${a.source === 'apk' ? '✓ verified APK' : pack ? 'channels · plays in Kodi' : 'Play Store'}</span></div>
+      <div class="pkg-note">${pack ? `home screen rows · installs ${esc(a.needs)}` : esc(a.package)}</div>
       ${a.note ? `<div class="hint" style="margin-top:4px">${esc(a.note)}</div>` : ''}
       <div class="store-status">${a.installed ? `${st('done')} installed${a.version ? ` · v${esc(a.version)}` : ''}${a.enabled ? '' : ' · <span class="st st-manual">switched off</span>'}`
         : '<span class="st st-pending">○ not installed</span>'}${a.catalog_version ? ` <span class="hint">· catalog v${esc(a.catalog_version)}</span>` : ''}</div>
       <div class="chips">${a.in_profile ? '<span class="chip">in profile</span>' : ''}${a.roles.map((r) => `<span class="chip accent">${esc(r)}</span>`).join('')}
         ${a.needs_a11y ? '<span class="chip">needs accessibility switch</span>' : ''}</div>
       <div class="row" style="margin-top:10px">
-        ${a.blocked && !a.installed ? '<span class="hint">no Play Store on this TV: needs a verified APK</span>' : ''}
+        ${a.blocked && !a.installed ? `<span class="hint">no Play Store on this TV: ${pack ? 'Kodi can\'t be installed' : 'needs a verified APK'}</span>` : ''}
         ${!a.installed && !a.blocked ? `<button class="btn btn-sm btn-primary" data-action="store-install" data-app="${esc(a.id)}" ${dis}>INSTALL</button>` : ''}
         ${update ? `<button class="btn btn-sm btn-cyan" data-action="store-update" data-app="${esc(a.id)}" ${dis}>UPDATE → v${esc(a.catalog_version)}</button>` : ''}
-        ${a.installed ? `<button class="btn btn-sm" data-action="store-open" data-pkg="${esc(a.package)}">▶ OPEN</button>` : ''}
-        ${a.installed && !a.roles.length ? `<button class="btn btn-sm btn-danger" data-action="store-uninstall" data-app="${esc(a.id)}" data-name="${esc(a.name)}" ${dis}>UNINSTALL</button>` : ''}
+        ${a.installed && a.package ? `<button class="btn btn-sm" data-action="store-open" data-pkg="${esc(a.package)}">▶ OPEN</button>` : ''}
+        ${a.installed && !a.roles.length ? `<button class="btn btn-sm btn-danger" data-action="store-uninstall" data-app="${esc(a.id)}" data-name="${esc(a.name)}" ${pack ? 'data-pack="1"' : ''} ${dis}>${pack ? 'REMOVE' : 'UNINSTALL'}</button>` : ''}
         ${a.installed && a.roles.length ? `<span class="lock" title="Change the profile's ${esc(a.roles.join(' / '))} first">🔒 in use</span>` : ''}
-        ${explainBtn(`Explain the app ${a.name} (${a.package}) for ${S.selected}: what is it good for, and should I install it?`)}
+        ${explainBtn(pack ? `Explain the channel pack ${a.name} (channels/${a.id}.toml) for ${S.selected}: which channels, and how do they play?`
+          : `Explain the app ${a.name} (${a.package}) for ${S.selected}: what is it good for, and should I install it?`)}
       </div></div>`;
   };
   el.innerHTML = head + `
@@ -1205,7 +1207,12 @@ async function appRun(appAction, appId) {
   await loadState(); renderLive(); renderStore();
 }
 
-function uninstallModal(app, name) {
+function uninstallModal(app, name, pack) {
+  if (pack) return modal(`<h2>Remove ${esc(name)}?</h2>
+    <p>Its rows are removed from the home screen of ${esc(S.selected)}. Kodi and Kodi Rows stay installed.</p>
+    <p class="hint">${S.opts.track ? 'It is also removed from the profile ([kodi].packs).' : 'The profile is left as it is.'} Install it again any time.</p>
+    <div class="row" style="justify-content:flex-end"><button class="btn" data-action="modal-close">CANCEL</button>
+    <button class="btn btn-danger" data-action="store-uninstall-go" data-app="${esc(app)}">REMOVE</button></div>`);
   modal(`<h2>Uninstall ${esc(name)}?</h2>
     <p>This deletes the app and its data (logins, settings) from ${esc(S.selected)}. Preinstalled apps can't be deleted; they are switched off instead (reversible).</p>
     <p class="hint">${S.opts.track ? 'It is also removed from the profile, so later runs do not reinstall it.' : 'The profile is left as it is.'} You can undo this run from the run history (APK apps are reinstalled automatically, Play Store apps need a reinstall).</p>
@@ -1706,7 +1713,7 @@ document.addEventListener('click', async (e) => {
     else if (a === 'store-reload') { S.store = null; renderStore(); loadStore(); }
     else if (a === 'store-install') await appRun('install', t.dataset.app);
     else if (a === 'store-update') await appRun('update', t.dataset.app);
-    else if (a === 'store-uninstall') uninstallModal(t.dataset.app, t.dataset.name);
+    else if (a === 'store-uninstall') uninstallModal(t.dataset.app, t.dataset.name, t.dataset.pack);
     else if (a === 'store-uninstall-go') { closeModal(); await appRun('uninstall', t.dataset.app); }
     else if (a === 'store-open') { await post(`/api/tv/${S.selected}/open`, { package: t.dataset.pkg }); toast('opened on the TV'); }
     else if (a === 'keys-learn') {

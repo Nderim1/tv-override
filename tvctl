@@ -63,6 +63,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parent
 PRESETS_DIR = ROOT / "presets"
 PROFILES_DIR = ROOT / "profiles"
+CHANNELS_DIR = ROOT / "channels"
 STATE_DIR = ROOT / "state"
 UI_PORT = int(os.environ.get("TVCTL_UI_PORT", "8787"))
 UI_TOKEN_FILE = STATE_DIR / ".ui-token"
@@ -72,6 +73,7 @@ EXIT_OK, EXIT_ERR, EXIT_USER = 0, 1, 2
 CLASS_PRIORITY = {"core": 0, "bloat": 1, "optional": 2}
 REMAP_RECEIVER = "com.nde.tvremap/.ConfigReceiver"
 KODIROWS_RECEIVER = "com.nde.kodirows/.ConfigReceiver"
+KODI_PKG = "org.xbmc.kodi"
 ANIMATION_KEYS = ("window_animation_scale", "transition_animation_scale", "animator_duration_scale")
 DNS_KEYS = ("private_dns_mode", "private_dns_specifier")
 # DNS ad / tracker filters: free public resolvers, no account. Android 9+ uses them encrypted (Private DNS,
@@ -795,6 +797,8 @@ def plan_a11y(ctx):
         pkg, comp = app["package"], app.get("a11y")
         if not comp or not ctx.installed(pkg):
             continue
+        if app.get("kodi_rows") and not any(r.get("type", "movies") == "movies" for r in kodi_rows(ctx.prof)):
+            continue  # its service shows long movie plots; live TV and radio rows don't need it
         label = app.get("a11y_label", app["name"])
         if comp not in enabled:
             acts.append(action("a11y", pkg, "enable-service",
@@ -851,10 +855,28 @@ def plan_keymap(ctx):
 
 # Kodi Rows (kodi-rows/): home screen rows of movies from Kodi add-ons, as Android TV preview channels.
 
+def load_packs():
+    """Channel packs (channels/<id>.toml): ready-made live TV / radio rows a profile adds with [kodi].packs."""
+    return {p.stem: load_toml(p) for p in sorted(CHANNELS_DIR.glob("*.toml"))}
+
+
+def kodi_rows(prof):
+    """The profile's [[kodi.rows]], then the rows of its channel packs (a profile row with the same id wins)."""
+    rows, packs = list(prof["kodi"].get("rows", [])), None
+    for pack_id in prof["kodi"].get("packs", []):
+        packs = packs or load_packs()
+        if pack_id not in packs:
+            raise TvError(f"[kodi].packs: no channel pack '{pack_id}' (channels/: {', '.join(packs) or 'none'})")
+        ids = {r.get("id") for r in rows}
+        rows += [r for r in packs[pack_id].get("rows", []) if r.get("id") not in ids]
+    return rows
+
+
 def kodi_rows_config(ctx):
-    """The JSON Kodi Rows stores, built from [[kodi.rows]]; compact, so it compares equal to GET_CONFIG."""
+    """The JSON Kodi Rows stores, built from [[kodi.rows]] and channel packs; compact, so it compares equal to
+    GET_CONFIG."""
     rows = []
-    for r in ctx.prof["kodi"].get("rows", []):
+    for r in kodi_rows(ctx.prof):
         live = r.get("type") in ("live", "radio")
         if r.get("type", "movies") not in ("movies", "live", "radio"):
             raise TvError("[[kodi.rows]].type must be movies, live or radio")
@@ -903,14 +925,31 @@ def kodi_rows_status(ctx):
         return {"error": data}
 
 
+def kodi_rows_current(ctx):
+    _, current = ctx.dev.broadcast(KODIROWS_RECEIVER, "com.nde.kodirows.GET_CONFIG")
+    return current
+
+
 def plan_kodi_rows(ctx):
-    if not ctx.prof["kodi"].get("rows"):
-        return []
     app_id, app = kodi_rows_app(ctx)
     if not app:
         return []
-    acts = plan_app_setup(ctx, app_id)
     pkg = app["package"]
+    if not kodi_rows(ctx.prof):
+        # The last rows left the profile (e.g. a channel pack was uninstalled): take them off the home screen too.
+        current = kodi_rows_current(ctx) if ctx.installed(pkg) else ""
+        try:
+            had_rows = bool(json.loads(current or "{}").get("rows"))
+        except json.JSONDecodeError:
+            had_rows = False
+        if not had_rows:
+            return []
+        raw = kodi_rows_config(ctx)
+        return [action("kodi-rows", pkg, "push", "no rows left: removed from the home screen",
+                       fn=lambda: push_kodi_rows(ctx, raw), undo={"op": "kodi-rows", "value": current})]
+    # Every row plays in Kodi: movies through their add-on, live TV and radio as streams.
+    kodi_id, _ = catalog_app_for(ctx, KODI_PKG)
+    acts = plan_app_setup(ctx, kodi_id) + plan_app_setup(ctx, app_id)
     if not ctx.installed(pkg):
         return acts + [action("kodi-rows", pkg, "push", "waiting for Kodi Rows to be installed", status="blocked")]
     # Without a launcher icon the app is never "used", and Android then never runs its refresh job.
@@ -919,7 +958,7 @@ def plan_kodi_rows(ctx):
         acts.append(action("kodi-rows", pkg, "standby-bucket", f"app standby bucket {bucket} → active (refresh job runs)",
                            fn=lambda: ctx.dev.sh(f"am set-standby-bucket {pkg} active")))
     raw = kodi_rows_config(ctx)
-    _, current = ctx.dev.broadcast(KODIROWS_RECEIVER, "com.nde.kodirows.GET_CONFIG")
+    current = kodi_rows_current(ctx)
     if current != raw:
         acts.append(action("kodi-rows", pkg, "push", f"{len(json.loads(raw)['rows'])} row(s)",
                            fn=lambda: push_kodi_rows(ctx, raw), undo={"op": "kodi-rows", "value": current}))
@@ -1519,7 +1558,10 @@ class Workflow:
         app_id, app = catalog_app_for(ctx, self.app_ref)
         pkg = app["package"] if app else self.app_ref
         self.record["app"] = {"action": self.app_action, "id": app_id, "package": pkg}
-        if self.app_action == "update":
+        if not app and self.app_ref in load_packs() and self.app_action != "update":
+            self.record["app"].update(id=self.app_ref, package=None, pack=True)
+            self._pack()
+        elif self.app_action == "update":
             if not app or app["source"] != "apk":
                 raise TvError("only APK apps from the catalog can be updated here (Play Store apps update themselves)")
             self._round([action("app", pkg, "update", f"{app['name']} → {app.get('version') or 'catalog APK'}",
@@ -1571,6 +1613,34 @@ class Workflow:
             "app": self.record["app"], "waiting": [public([a])[0] for a in final if a["status"] in ("manual", "blocked", "declined")]}
         self.record["outcome"] = ("error" if self.record["summary"]["errors"] else
                                   "waiting" if self.record["summary"]["waiting"] else "ok")
+
+    def _pack(self):
+        """Add or remove a channel pack: its rows on the home screen, with Kodi and Kodi Rows to play them."""
+        ctx, name, pack_id, add = self.ctx, self.record["tv"], self.app_ref, self.app_action == "install"
+        if self.track:
+            track_pack(name, pack_id, add)
+            ctx.prof = load_profile(name)
+        else:
+            others = [p for p in ctx.prof["kodi"].get("packs", []) if p != pack_id]
+            ctx.prof["kodi"]["packs"] = others + ([pack_id] if add else [])
+        while len(self.record["rounds"]) < 6:
+            # accessibility switches belong to the full workflow; the channels play without them
+            acts = [a for a in plan_kodi_rows(ctx) if a["step"] != "a11y"]
+            if not acts:
+                break
+            self._round(acts)
+            ctx.refresh()
+            waiting = [a for a in acts if a["status"] in ("manual", "blocked")]
+            if any(a["status"] == "error" for a in acts):
+                break
+            if waiting and not any(a["status"] == "done" for a in acts):  # after an install, plan again first
+                self.emit("waiting", items=public(waiting))
+                if not self.hooks.wait(public(waiting)):
+                    break
+                ctx.refresh()
+        if not self.record["rounds"]:
+            self._round([action("app", pack_id, self.app_action,
+                                "already on this TV" if add else "not on this TV", status="skipped")])
 
     def _revert(self):
         source = load_run(self.record["tv"], self.revert_run)
@@ -1761,6 +1831,21 @@ def store_view(ctx):
                      "in_profile": app_id in tracked, "needs_a11y": bool(app.get("a11y")),
                      "roles": app_roles(ctx, pkg),
                      "blocked": app["source"] == "play" and not ctx.installed("com.android.vending")})
+    in_use, packs = set(ctx.prof["kodi"].get("packs", [])), load_packs()
+    pushed = set()
+    if packs and ctx.installed("com.nde.kodirows"):
+        try:
+            pushed = {r["id"] for r in json.loads(kodi_rows_current(ctx) or "{}").get("rows", [])}
+        except (json.JSONDecodeError, KeyError):
+            pass
+    for pack_id, pack in packs.items():
+        rows = pack.get("rows", [])
+        apps.append({"id": pack_id, "name": pack.get("name", pack_id), "package": None, "source": "channels",
+                     "note": pack.get("note", ""), "catalog_version": None,
+                     "installed": ctx.installed(KODI_PKG) and all(r.get("id") in pushed for r in rows),
+                     "enabled": True, "version": None, "in_profile": pack_id in in_use, "needs_a11y": False,
+                     "roles": [], "needs": "Kodi + Kodi Rows",
+                     "blocked": not ctx.installed(KODI_PKG) and not ctx.installed("com.android.vending")})
     known = {a["package"] for a in ctx.catalog.values()}
     others = [{"package": p, "note": ctx.classifier.classify(p)[1]} for p, i in sorted(ctx.pkgs.items())
               if i["user"] and p not in known]
@@ -1775,6 +1860,17 @@ def track_app(profile, app_id, add):
     values = current + [app_id] if add and app_id not in current else [a for a in current if a != app_id]
     if values != current:
         text = set_toml_array(prof["_path"].read_text(), "apps", "install", values)
+        tomllib.loads(text)
+        prof["_path"].write_text(text)
+
+
+def track_pack(profile, pack_id, add):
+    """Add/remove a channel pack in [kodi].packs."""
+    prof = load_profile(profile)
+    current = list(prof["kodi"].get("packs", []))
+    values = current + [pack_id] if add and pack_id not in current else [p for p in current if p != pack_id]
+    if values != current:
+        text = set_toml_array(prof["_path"].read_text(), "kodi", "packs", values)
         tomllib.loads(text)
         prof["_path"].write_text(text)
 
@@ -1912,6 +2008,7 @@ def cmd_revert(args):
 def cmd_install(args):
     ensure_ui()
     prof = load_profile(args.profile)
+    no_packs(prof, args.app_id)
     if platform_of(prof) == "tizen":
         data = tizen_install(prof, args.app_id, lambda m: print(m, file=sys.stderr))
         emit(args, data, lambda: print(f"✓ installed {data['name']}"))
@@ -1933,6 +2030,7 @@ def cmd_install(args):
 def cmd_uninstall(args):
     ensure_ui()
     prof = load_profile(args.profile)
+    no_packs(prof, args.app)
     if platform_of(prof) == "tizen":
         data = tizen_uninstall(prof, args.app, lambda m: print(m, file=sys.stderr))
         emit(args, data, lambda: print(f"✓ removed {args.app}"))
@@ -1940,6 +2038,13 @@ def cmd_uninstall(args):
     rec = Workflow(args.profile, "app", CliHooks(args), yes=args.yes, measure=False, app_action="uninstall",
                    app=args.app, track=not args.no_track).run()
     return report_app_run(args, rec)
+
+
+def no_packs(prof, ref):
+    """Channel packs play in Kodi through Kodi Rows: Android TVs only."""
+    if platform_of(prof) != "adb" and ref in load_packs():
+        raise TvError(f"'{ref}' is a channel pack: its channels play in Kodi, which needs an Android / Google TV. "
+                      + NOT_ANDROID)
 
 
 def report_app_run(args, rec):
@@ -3845,6 +3950,10 @@ debloat = true
 # animation_scale = 0.5
 # dns = "hagezi-light"         # ad / tracker filter: hagezi-light | controld-ads | adguard | off (tvctl: DNS_FILTERS)
 
+[kodi]
+# Channel packs from channels/ as home screen rows, played in Kodi (installs Kodi + Kodi Rows), e.g. ["kosovo"]
+packs = []
+
 [keys]
 """
 
@@ -4012,14 +4121,14 @@ def main():
     p.add_argument("--keep", action="store_true", help="add re-enabled packages to [apps].keep")
     p.add_argument("--yes", action="store_true", help="confirm uninstalls of apps that run installed")
     p.add_argument("--measure", action="store_true")
-    p = add("install", cmd_install, "install one catalog app (and keep it in the profile)")
-    p.add_argument("app_id", help="catalog id or package")
+    p = add("install", cmd_install, "install one catalog app or channel pack (and keep it in the profile)")
+    p.add_argument("app_id", help="catalog id, package or channel pack (channels/, e.g. kosovo: also installs Kodi)")
     p.add_argument("--force", action="store_true", help="reinstall an APK app that is already installed")
-    p.add_argument("--no-track", action="store_true", help="don't add it to [apps].install")
-    p = add("uninstall", cmd_uninstall, "uninstall one app (catalog id or package)")
-    p.add_argument("app", help="catalog id or package")
+    p.add_argument("--no-track", action="store_true", help="don't add it to [apps].install / [kodi].packs")
+    p = add("uninstall", cmd_uninstall, "uninstall one app (catalog id or package) or remove a channel pack's rows")
+    p.add_argument("app", help="catalog id, package or channel pack")
     p.add_argument("--yes", action="store_true", help="don't ask before deleting the app and its data")
-    p.add_argument("--no-track", action="store_true", help="don't remove it from [apps].install")
+    p.add_argument("--no-track", action="store_true", help="don't remove it from [apps].install / [kodi].packs")
     p = add("status", cmd_status, "show TV state")
     p.add_argument("--reboot", action="store_true", help="reboot first and check the TV boots into the profile")
     add("snapshot", cmd_snapshot, "save the current package state")

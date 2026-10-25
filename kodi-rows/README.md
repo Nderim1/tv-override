@@ -41,6 +41,10 @@ Android TV's station type and show `RADIO · Kosovo` in the description. Direct 
 or HLS; Gjirafa stations resolve their current HLS URL on each click, as TV stations do. Kodi handles the
 audio playback; the home row refreshes even while Kodi is closed or playing.
 
+Ready-made live and radio rows live in channel packs, `channels/<id>.toml` (`name`, `note`, then `[[rows]]` and
+`[[rows.channels]]` in the same format). A profile adds one with `[kodi] packs = ["kosovo"]`; its rows follow the
+profile's own rows, and a profile row with the same id wins. `tvctl install <tv> kosovo` does the same in one go.
+
 Enable a new row once in Projectivy: Settings → Edit channels → Kodi Rows → <row> → Visible.
 On the home screen, LEFT from its first card reaches the row header. Move left to the up/down reorder
 icon (past the gear), then OK starts reordering, UP/DOWN moves the row, and OK saves.

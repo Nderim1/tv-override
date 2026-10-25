@@ -22,7 +22,8 @@ commands (Codex, Claude Code, …).
 - `state/<tv>/` – baseline, dossier (all TV data), prep guide, run records. Keep it; restore/revert rely on it.
 - `apks/` – verified APKs and Samsung .wgt packages (sha256 pinned in apps.toml). `remote-remap/` – our button
   remapper. `kodi-rows/` – our app that puts movie rows from Kodi add-ons on the Android TV home screen
-  (`[[kodi.rows]]`, `tvctl kodi`). `samsung-home/` – Override Home, our home screen for Samsung TVs (Tizen web app, ES5).
+  (`[[kodi.rows]]`, `tvctl kodi`); `channels/` – channel packs of live TV / radio rows for it (`[kodi].packs`,
+  e.g. `kosovo`; `tvctl install <tv> kosovo` also installs Kodi + Kodi Rows). `samsung-home/` – Override Home, our home screen for Samsung TVs (Tizen web app, ES5).
 - `ui/` – control center (live runs, screen, prep walkthrough, apps, buttons, approvals, history).
 - `prompts/` – agent prompts; `prompts/roles/` – helper roles. `agent.toml` – how `tvctl helper` runs them.
 - `legacy/` – the first, one-off scripts. Reference only.

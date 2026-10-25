@@ -10,6 +10,7 @@ and offer the recommended answer. Before asking, run `./tvctl --json inventory <
 |---|---|
 | Full makeover, or only some parts? (apps only / cleanup / new home screen / everything) | recipe or `--only` steps for the run; apps only → `[apps].debloat = false` and no `[home].launcher` |
 | Which apps do you actually watch with? (streaming, Kodi, YouTube…) | `[apps].install` (catalog ids), `[apps].keep` |
+| Kosovo TV and radio channels on the home screen? (RTK, Klan Kosova, KTV, RTV 21, …; free streams, play in Kodi) | yes → `[kodi].packs = ["kosovo"]` (installs Kodi + Kodi Rows; other packs: `channels/`) |
 | Do you watch antenna / cable / satellite channels on the TV itself? | yes → pin the brand's live TV player (preset `[live_tv].player`) in the launcher, offer a remote button for it. Live TV packages stay on either way |
 | Do you use YouTube? Signed in? Ads bother you? | recommend `smarttube` (ad-free, sign-in keeps subscriptions); stock YouTube goes to `disable` |
 | Do you use the voice button on the remote? | yes → keep `com.google.android.katniss` + vendor voice (e.g. `com.tcl.ttvs`); no → disable (saves ~110 MB) |

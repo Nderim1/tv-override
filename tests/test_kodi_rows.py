@@ -84,5 +84,44 @@ class KodiRowsConfigTest(unittest.TestCase):
         self.assertEqual(self.config()["rows"][1]["channels"][0]["url"], "https://example.org/live")
 
 
+class ChannelPackTest(unittest.TestCase):
+    def setUp(self):
+        self.movie = {"id": "movies", "name": "Movies", "paths": ["plugin://movies/recent"]}
+        self.pack = {"rows": [{"id": "pack-live", "name": "Pack TV", "type": "live", "channels": [
+            {"id": "one", "name": "One", "url": "https://example.org/one.m3u8"}]}]}
+        self.real_packs = tvctl.load_packs
+        tvctl.load_packs = lambda: {"test": self.pack}
+
+    def tearDown(self):
+        tvctl.load_packs = self.real_packs
+
+    def test_pack_rows_follow_profile_rows(self):
+        prof = {"kodi": {"rows": [self.movie], "packs": ["test"]}}
+        self.assertEqual([r["id"] for r in tvctl.kodi_rows(prof)], ["movies", "pack-live"])
+
+    def test_pack_alone_is_enough(self):
+        self.assertEqual([r["id"] for r in tvctl.kodi_rows({"kodi": {"packs": ["test"]}})], ["pack-live"])
+
+    def test_profile_row_with_same_id_wins(self):
+        own = {"id": "pack-live", "name": "My TV", "type": "live", "channels": []}
+        rows = tvctl.kodi_rows({"kodi": {"rows": [own], "packs": ["test"]}})
+        self.assertEqual(rows, [own])
+
+    def test_unknown_pack_is_an_error(self):
+        with self.assertRaises(tvctl.TvError):
+            tvctl.kodi_rows({"kodi": {"packs": ["nope"]}})
+
+
+class ShippedPacksTest(unittest.TestCase):
+    def test_every_pack_is_a_valid_config(self):
+        packs = tvctl.load_packs()
+        self.assertIn("kosovo", packs)
+        for pack_id in packs:
+            ctx = SimpleNamespace(prof={"kodi": {"packs": [pack_id]}})
+            rows = json.loads(tvctl.kodi_rows_config(ctx))["rows"]
+            self.assertTrue(rows and all(r["type"] in ("live", "radio") for r in rows), pack_id)
+            self.assertTrue(packs[pack_id].get("name") and packs[pack_id].get("note"), pack_id)
+
+
 if __name__ == "__main__":
     unittest.main()

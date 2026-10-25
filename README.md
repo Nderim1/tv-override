@@ -19,6 +19,7 @@ runtime that can run shell commands (Codex, Claude Code, …), see "Agents" belo
 | `apks/` | Verified APKs (sha256 pinned in `apps.toml`), e.g. SmartTube 32.56 |
 | `remote-remap/` | Our 16 KB button remapper app (config pushed by tvctl; `bash build.sh`, no Gradle) |
 | `kodi-rows/` | Home screen rows of Kodi movies, live TV and radio, click to play (`[[kodi.rows]]`) |
+| `channels/` | Channel packs: ready-made live TV / radio rows, e.g. `kosovo` (`[kodi].packs`) |
 | `state/<tv>/` | Baseline snapshot + history of every change (used by restore) |
 | `ui/` | The control center: `server.py` (stdlib HTTP + SSE) and `static/` (vanilla JS, no build) |
 | `prompts/` | Agent prompts: system prompt, owner interview, package classification, keys, diagnosis, APK checks |
@@ -193,6 +194,12 @@ Separate live TV and radio rows use `type = "live"` or `type = "radio"` and `[[k
 entries with station names, logos and playback URLs. Gjirafa streams resolve on entry; Klan links renew
 during playback. These rows refresh independently of Kodi. See [Kodi Rows](kodi-rows/README.md) for the
 profile format and checked sources.
+
+Channel packs (`channels/<id>.toml`) are such rows ready-made: `kosovo` has 13 Kosovo TV channels and 11
+radio stations. Add one with `[kodi] packs = ["kosovo"]` in the profile, `./tvctl install <tv> kosovo` or the
+dashboard's app store; it installs Kodi (Play Store) and Kodi Rows first, since the channels play in Kodi.
+`tvctl uninstall <tv> kosovo` takes the rows off the home screen and leaves the apps. A profile row with the
+same id overrides the pack's. Android TVs only.
 
 ## Adding knowledge
 
