@@ -20,7 +20,9 @@ commands (Codex, Claude Code, …).
 - `profiles/<tv>.toml` – desired state of one TV. `presets/*.toml` – brand/platform knowledge (core / bloat /
   optional packages, live TV, launcher, quirks, remote keys, `[[prepare]]` steps). `apps.toml` – app catalog.
 - `state/<tv>/` – baseline, dossier (all TV data), prep guide, run records. Keep it; restore/revert rely on it.
-- `apks/` – verified APKs (sha256 pinned in apps.toml). `remote-remap/` – our button remapper.
+- `apks/` – verified APKs and Samsung .wgt packages (sha256 pinned in apps.toml). `remote-remap/` – our button
+  remapper. `kodi-rows/` – our app that puts movie rows from Kodi add-ons on the Android TV home screen
+  (`[[kodi.rows]]`, `tvctl kodi`). `samsung-home/` – Override Home, our home screen for Samsung TVs (Tizen web app, ES5).
 - `ui/` – control center (live runs, screen, prep walkthrough, apps, buttons, approvals, history).
 - `prompts/` – agent prompts; `prompts/roles/` – helper roles. `agent.toml` – how `tvctl helper` runs them.
 - `legacy/` – the first, one-off scripts. Reference only.
@@ -28,9 +30,18 @@ commands (Codex, Claude Code, …).
 ## Platforms
 
 `[tv].platform` in a profile: `adb` (Android, full workflow) or a TV without ADB (`vestel`, `roku`, `webos`,
-`tizen`, `dial`) that only supports DIAL app launching, network keys where available and the guided
-walkthrough. tvctl refuses ADB-only commands on those with an explanation; suggest an Android TV stick on HDMI
+`tizen`, `dial`) that only supports app launching (DIAL; Samsung's own API), network keys where available and the
+guided walkthrough. Samsung: `tvctl pair <tv>` once (owner chooses Allow on the TV), then `key`, `type` and app
+launching work; in Developer Mode `tvctl tizen setup` + `tvctl install <tv> tizentube|override-home` install
+TizenTube and our home screen (`samsung-home/`); see "Samsung TV" in `prompts/workflow.md`. tvctl refuses ADB-only commands on those with an explanation; suggest an Android TV stick on HDMI
 when the owner wants the full workflow.
+
+Screens of TVs without ADB come from the dashboard's phone camera ([00] live screen › START PHONE CAMERA, a phone
+on the Wi-Fi pointed at the TV); `tvctl screenshot` then returns its newest JPEG.
+
+DNS ad / tracker filter: `[home].dns` (`hagezi-light` recommended, free, no account) – the `tweaks` step sets it
+as Android Private DNS and rolls back if the TV loses internet; TVs without ADB get it as a `dns-filter`
+prepare step.
 
 ## Rules that matter most
 

@@ -373,3 +373,19 @@ textarea.ta { width: 100%; min-height: 80px; background: var(--surface-2); borde
 /* ---------- remote pad (TVs with network keys) ---------- */
 .pad { display: grid; grid-template-columns: repeat(4, 64px); gap: 6px; }
 .pad .btn { height: 44px; padding: 0; font-size: 13px; }
+/* phone camera (TVs without screenshots) */
+.cam-box { display: flex; gap: 14px; align-items: flex-start; margin-top: 10px; padding: 12px 14px; border: 1px dashed var(--border-strong); border-radius: 4px; }
+.cam-qr { flex: 0 0 132px; width: 132px; background: #fff; border-radius: 4px; padding: 4px; }
+.cam-qr svg { display: block; width: 100%; height: auto; }
+.cam-url { display: inline-block; margin: 4px 0; color: var(--accent); word-break: break-all; font-weight: 700; }
+#type-text { flex: 1; min-width: 0; }
+@media (max-width: 560px) { .cam-box { flex-direction: column; } }
+/* Samsung: own apps */
+.tz-checks { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 6px; }
+.tz-checks li { display: flex; gap: 10px; align-items: flex-start; }
+.tz-checks li.ok b { font-weight: 500; color: var(--muted); }
+.tz-log { max-height: 180px; margin-top: 6px; }
+.tz-dock { margin-top: 12px; }
+.tz-dock summary { cursor: pointer; }
+.tz-dock-list { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0; }
+.licence { max-height: 46vh; overflow: auto; white-space: pre-wrap; font-size: 12px; padding: 10px; border: 1px solid var(--border-strong); border-radius: 4px; }

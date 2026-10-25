@@ -62,6 +62,17 @@ autostart = true
 keymap = true
 note = "Our own 16 KB remapper. Built locally; sha256 is not pinned because it changes on every build."
 
+[kodi-rows]
+name = "Kodi Rows"
+package = "com.nde.kodirows"
+source = "apk"
+file = "kodi-rows/kodi-rows.apk"
+build = "kodi-rows/build.sh"
+kodi_rows = true
+a11y = "com.nde.kodirows/com.nde.kodirows.DescriptionService"
+a11y_label = "Kodi Rows descriptions"
+note = "Our own app: [[kodi.rows]] become home screen movie, live TV or radio rows (Android TV preview channels); selecting a card opens Kodi and plays it. type=live or radio uses profile channels with HTTP(S) streams and landscape logos, and refreshes even with Kodi closed. Gjirafa links resolve on entry; Klan signatures renew during playback. Its accessibility service shows the focused item's full description over the launcher's text box. Built locally; sha256 not pinned."
+
 # Screensaver-only entries (preinstalled packages)
 [google-ambient]
 name = "Google ambient screensaver"
@@ -80,3 +91,33 @@ name = "Basic colours"
 package = "com.android.dreams.basic"
 source = "system"
 dream = "com.android.dreams.basic/.Colors"
+
+# ---- Samsung Tizen apps (platform = "tizen"). Installed in Developer Mode, re-signed with the owner's Samsung
+# certificate (tvctl tizen setup). source = "wgt": a verified package in apks/; source = "build": built from
+# this repo. app_id launches it, package uninstalls it.
+
+[tizentube]
+platform = "tizen"
+name = "TizenTube"
+source = "wgt"
+app_id = "xvvl3S1TT1.TizenTubeStandalone"
+package = "xvvl3S1TT1"
+version = "2.1.1"
+file = "apks/TizenTubeCobalt-2.1.1.wgt"
+sha256 = "d5ebcf5b61e907912d5200b033f0d366717cb952c9f543a6332d36bef771b3b5"
+min_tizen = 6
+older = { file = "apks/TizenTubeOld-2.1.1.wgt", sha256 = "97dd00e3229b47f9892586fcd35ae7f7c8812b18f4be749b19c57a75b9ed6344" }
+privilege = "Partner"
+origin = "https://github.com/reisxd/TizenTube/releases/tag/v2.1.1"
+note = "Ad-free YouTube with SponsorBlock (YouTube's own TV app, modded). Tizen 6+ (2021+) gets the Cobalt build, older TVs the old one. Older-TV playback errors: after installation, set Developer Mode Host PC IP to 127.0.0.1 and fully restart; use the computer's IP again for future installations. Upstream: github.com/reisxd/TizenTube/blob/main/docs/README.md. GPL-3.0."
+
+[override-home]
+platform = "tizen"
+name = "Override Home"
+source = "build"
+dir = "samsung-home"
+app_id = "TvOvrHome1.Home"
+package = "TvOvrHome1"
+version = "1.0.0"
+home = true
+note = "Our home screen: your apps from [home].dock, clock, screensaver. The TV starts in it (Start Screen Options); the Home button still opens Smart Hub."

@@ -31,12 +31,16 @@ Exit codes: 0 ok, 1 error, 2 waiting on the owner (manual step or confirmation).
 """
 
 import argparse
+import base64
 import os
+import ssl
+import struct
 import threading
 import fnmatch
 import hashlib
 import json
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -67,7 +71,21 @@ CATALOG_FILE = ROOT / "apps.toml"
 EXIT_OK, EXIT_ERR, EXIT_USER = 0, 1, 2
 CLASS_PRIORITY = {"core": 0, "bloat": 1, "optional": 2}
 REMAP_RECEIVER = "com.nde.tvremap/.ConfigReceiver"
+KODIROWS_RECEIVER = "com.nde.kodirows/.ConfigReceiver"
 ANIMATION_KEYS = ("window_animation_scale", "transition_animation_scale", "animator_duration_scale")
+DNS_KEYS = ("private_dns_mode", "private_dns_specifier")
+# DNS ad / tracker filters: free public resolvers, no account. Android 9+ uses them encrypted (Private DNS,
+# DNS-over-TLS hostname); TVs without ADB get a guided step with the plain addresses (one or two DNS fields).
+DNS_FILTERS = {
+    "hagezi-light": {"name": "Control D · HaGeZi Light", "dot": "x-hagezi-light.freedns.controld.com",
+                     "ipv4": ["76.76.2.37", "76.76.10.37"],
+                     "about": "Ads, trackers and TV makers' ad / content-recognition hosts; a relaxed list made "
+                              "not to break apps. Recommended."},
+    "controld-ads": {"name": "Control D · Ads & Tracking", "dot": "p2.freedns.controld.com",
+                     "ipv4": ["76.76.2.2", "76.76.10.2"], "about": "Control D's own ads & tracking list; stricter."},
+    "adguard": {"name": "AdGuard DNS", "dot": "dns.adguard-dns.com", "ipv4": ["94.140.14.14", "94.140.15.15"],
+                "about": "AdGuard's default ads & tracking list."},
+}
 
 
 class TvError(Exception):
@@ -210,7 +228,7 @@ class Device:
 
     def tv_settings(self):
         keys = [("secure", "screensaver_components"), ("secure", "screensaver_enabled")] + \
-               [("global", k) for k in ANIMATION_KEYS]
+               [("global", k) for k in ANIMATION_KEYS + DNS_KEYS]
         return {k: self.setting(ns, k) for ns, k in keys}
 
     def broadcast(self, component, action, extras=""):
@@ -228,8 +246,9 @@ def load_toml(path):
         return tomllib.load(f)
 
 
-def load_catalog():
-    return load_toml(CATALOG_FILE)
+def load_catalog(platform="adb"):
+    """Catalog apps for one platform (Android apps have no `platform`)."""
+    return {i: a for i, a in load_toml(CATALOG_FILE).items() if a.get("platform", "adb") == platform}
 
 
 def profile_path(arg):
@@ -250,7 +269,7 @@ def load_profile(arg):
     if "host" not in tv:
         raise TvError(f"{path}: [tv].host missing")
     tv.setdefault("name", path.stem)
-    for section in ("apps", "home", "keys"):
+    for section in ("apps", "home", "keys", "kodi"):
         prof.setdefault(section, {})
     return prof
 
@@ -830,6 +849,165 @@ def plan_keymap(ctx):
                    undo={"op": "keymap", "value": current})]
 
 
+# Kodi Rows (kodi-rows/): home screen rows of movies from Kodi add-ons, as Android TV preview channels.
+
+def kodi_rows_config(ctx):
+    """The JSON Kodi Rows stores, built from [[kodi.rows]]; compact, so it compares equal to GET_CONFIG."""
+    rows = []
+    for r in ctx.prof["kodi"].get("rows", []):
+        live = r.get("type") in ("live", "radio")
+        if r.get("type", "movies") not in ("movies", "live", "radio"):
+            raise TvError("[[kodi.rows]].type must be movies, live or radio")
+        if not r.get("name") or not r.get("channels" if live else "paths"):
+            raise TvError("[[kodi.rows]] needs name and " + ("channels" if live else "paths"))
+        if live:
+            channels, ids = [], set()
+            for c in r["channels"]:
+                if not re.fullmatch(r"[a-z0-9-]{1,60}", c.get("id", "")) or c["id"] in ids:
+                    raise TvError("live channels need unique slug ids within their row")
+                if not c.get("name") or not re.match(r"^https?://", c.get("url", "")):
+                    raise TvError(f"live channel {c['id']} needs name and an http(s) stream URL")
+                if c.get("resolver", "direct") not in ("direct", "gjirafa", "klan"):
+                    raise TvError(f"live channel {c['id']}: resolver must be direct, gjirafa or klan")
+                ids.add(c["id"])
+                channels.append({k: c[k] for k in ("id", "name", "url", "logo", "description", "source", "resolver") if k in c})
+            rows.append({"id": r.get("id") or re.sub(r"[^a-z0-9]+", "-", r["name"].lower()).strip("-")[:40],
+                         "name": r["name"], "type": r["type"], "channels": channels})
+            continue
+        rows.append({"id": r.get("id") or re.sub(r"[^a-z0-9]+", "-", r["name"].lower()).strip("-")[:40],
+                     "name": r["name"], "paths": list(r["paths"]), "pages": r.get("pages", 1),
+                     "max": r.get("max", 40), "sort": r.get("sort", "year"),
+                     "exclude_countries": r.get("exclude_countries", []),
+                     "exclude_languages": r.get("exclude_languages", []),
+                     "exclude_ratings": r.get("exclude_ratings", [])})
+    cfg = {"port": ctx.prof["kodi"].get("port", 9090), "refresh_minutes": ctx.prof["kodi"].get("refresh_minutes", 60),
+           "rows": rows}
+    return json.dumps(cfg, separators=(",", ":"), ensure_ascii=False)
+
+
+def kodi_rows_app(ctx):
+    return next(((i, a) for i, a in ctx.catalog.items() if a.get("kodi_rows")), (None, None))
+
+
+def push_kodi_rows(ctx, raw):
+    code, data = ctx.dev.broadcast(KODIROWS_RECEIVER, "com.nde.kodirows.SET_CONFIG", f"--es config {shlex.quote(raw)}")
+    if code != 1:
+        raise TvError(f"Kodi Rows rejected the rows: {data}")
+
+
+def kodi_rows_status(ctx):
+    _, data = ctx.dev.broadcast(KODIROWS_RECEIVER, "com.nde.kodirows.GET_STATUS")
+    try:
+        return json.loads(data or "{}")
+    except json.JSONDecodeError:
+        return {"error": data}
+
+
+def plan_kodi_rows(ctx):
+    if not ctx.prof["kodi"].get("rows"):
+        return []
+    app_id, app = kodi_rows_app(ctx)
+    if not app:
+        return []
+    acts = plan_app_setup(ctx, app_id)
+    pkg = app["package"]
+    if not ctx.installed(pkg):
+        return acts + [action("kodi-rows", pkg, "push", "waiting for Kodi Rows to be installed", status="blocked")]
+    # Without a launcher icon the app is never "used", and Android then never runs its refresh job.
+    bucket = ctx.dev.sh(f"am get-standby-bucket {pkg}").strip()
+    if bucket.isdigit() and int(bucket) >= 45:
+        acts.append(action("kodi-rows", pkg, "standby-bucket", f"app standby bucket {bucket} → active (refresh job runs)",
+                           fn=lambda: ctx.dev.sh(f"am set-standby-bucket {pkg} active")))
+    raw = kodi_rows_config(ctx)
+    _, current = ctx.dev.broadcast(KODIROWS_RECEIVER, "com.nde.kodirows.GET_CONFIG")
+    if current != raw:
+        acts.append(action("kodi-rows", pkg, "push", f"{len(json.loads(raw)['rows'])} row(s)",
+                           fn=lambda: push_kodi_rows(ctx, raw), undo={"op": "kodi-rows", "value": current}))
+    return acts
+
+
+def kodi_rpc(ctx, method, params=None, timeout=120):
+    """One Kodi JSON-RPC call on the TV, through an ADB port forward (Kodi counts it as a local app)."""
+    import socket
+    _, out, _ = ctx.dev.adb("forward", "tcp:0", f"tcp:{ctx.prof['kodi'].get('port', 9090)}")
+    port = int(out.strip())
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+            s.sendall(json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}).encode())
+            dec, buf = json.JSONDecoder(), ""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    raise TvError("Kodi closed the connection (is Kodi running on the TV?)")
+                buf += chunk.decode("utf-8", "replace")
+                while buf.lstrip().startswith("{"):
+                    try:
+                        msg, end = dec.raw_decode(buf.lstrip())
+                    except json.JSONDecodeError:
+                        break
+                    buf = buf.lstrip()[end:]
+                    if msg.get("id") == 1:
+                        if "error" in msg:
+                            raise TvError(f"Kodi {method}: {msg['error'].get('message')} {msg['error'].get('data', '')}")
+                        return msg.get("result")
+    except OSError as e:
+        raise TvError(f"Kodi JSON-RPC not reachable ({e}); start Kodi on the TV") from e
+    finally:
+        ctx.dev.adb("forward", "--remove", f"tcp:{port}")
+
+
+def cmd_kodi(args):
+    ctx = ctx_for(args)
+    _, app = kodi_rows_app(ctx)
+    if args.kodi_cmd == "browse":
+        res = kodi_rpc(ctx, "Files.GetDirectory", {"directory": args.path, "media": "video",
+                                                   "properties": ["title", "year"]})
+        files = [{"label": re.sub(r"\[/?[A-Z]+[^\]]*\]", "", f.get("label", "")), "type": f.get("filetype"),
+                  "year": f.get("year") or None, "path": f.get("file")} for f in (res or {}).get("files") or []]
+        def human():
+            for f in files:
+                print(f"  {'▸' if f['type'] == 'directory' else ' '} {f['label']}" + (f"  ({f['year']})" if f["year"] else ""))
+                if f["type"] == "directory":
+                    print(f"      {f['path']}")
+        emit(args, files, human)
+        return EXIT_OK
+    if not app or not ctx.installed(app["package"]):
+        raise TvError("Kodi Rows is not installed – add [[kodi.rows]] to the profile and run apply --steps home")
+    if args.kodi_cmd == "play":
+        cfg = json.loads(kodi_rows_config(ctx))
+        row = next((r for r in cfg["rows"] if r["id"] == args.row and r.get("type") in ("live", "radio")), None)
+        if not row or not any(c["id"] == args.channel for c in row["channels"]):
+            raise TvError("channel not found in this profile's live rows")
+        key = hashlib.sha1(f"live:{args.row}:{args.channel}".encode()).hexdigest()[:16]
+        out = ctx.dev.sh(f"am start -W -n {app['package']}/.PlayActivity -d kodirows://play/{key}")
+        if "Error:" in out or "Exception" in out:
+            raise TvError(out.strip())
+        emit(args, {"play": "requested", "row": args.row, "channel": args.channel},
+             lambda: print(f"✓ opening {args.channel} in Kodi"))
+    elif args.kodi_cmd == "push":
+        raw = kodi_rows_config(ctx)
+        push_kodi_rows(ctx, raw)
+        emit(args, json.loads(raw), lambda: print(f"✓ pushed {len(json.loads(raw)['rows'])} row(s); refreshing on the TV"))
+    elif args.kodi_cmd == "refresh":
+        ctx.dev.broadcast(KODIROWS_RECEIVER, "com.nde.kodirows.REFRESH")
+        emit(args, {"refresh": "started"}, lambda: print("✓ refresh started (tvctl kodi status to see the result)"))
+    else:
+        st = kodi_rows_status(ctx)
+        def human():
+            if not st:
+                print("  no refresh yet")
+                return
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.get("time", 0)))
+            print(f"  last refresh {when}: {'ok' if st.get('ok') else 'not ok'}" + (f" – {st['error']}" if st.get("error") else ""))
+            for r in st.get("rows", []):
+                unit = {"live": "channels", "radio": "stations"}.get(r.get("type"), "movies")
+                print(f"  {r['name']}: {r.get('count', 0)} {unit}" + (f" – {r['error']}" if r.get("error") else ""))
+                for t in r.get("first", []):
+                    print(f"      {t}")
+        emit(args, st, human)
+    return EXIT_OK
+
+
 def pm(ctx, verb, pkg):
     cmd = {"disable": f"pm disable-user --user 0 {pkg}", "enable": f"pm enable --user 0 {pkg}"}[verb]
     out = ctx.dev.sh(cmd)
@@ -983,6 +1161,51 @@ def plan_animations(ctx):
                    undo={"op": "settings", "ns": "global", "values": current})]
 
 
+def dns_check(dev, tries=6):
+    """Can the TV still resolve names, and are ad hosts blocked? Uses the TV's own resolver (Private DNS included)."""
+    for _ in range(tries):
+        out = dev.sh("ping -c 1 -W 2 www.google.com 2>&1 | head -1; ping -c 1 -W 1 googleads.g.doubleclick.net 2>&1 | head -1")
+        ok = re.search(r"PING www\.google\.com \((\d+\.\d+\.\d+\.\d+)\)", out)
+        if ok and ok.group(1) != "0.0.0.0":
+            ad = re.search(r"PING googleads\S* \((\d+\.\d+\.\d+\.\d+)\)", out)
+            return {"internet": True, "ads_blocked": not ad or ad.group(1) == "0.0.0.0"}
+        time.sleep(2.5)  # the TV re-validates its DNS after a change
+    return {"internet": False, "ads_blocked": None}
+
+
+def plan_dns(ctx):
+    choice = ctx.prof["home"].get("dns")
+    if not choice:
+        return []
+    current = {k: ctx.dev.setting("global", k) for k in DNS_KEYS}
+    if choice == "off":
+        if current["private_dns_mode"] in (None, "opportunistic"):
+            return []
+        want, label = {"private_dns_mode": "opportunistic"}, "off (Android's automatic DNS)"
+    else:
+        f = DNS_FILTERS.get(choice)
+        if not f:
+            raise TvError(f"unknown DNS filter {choice}; choose {', '.join(DNS_FILTERS)} or off")
+        if int(ctx.dev.prop("ro.build.version.sdk") or 0) < 28:
+            return [action("dns", "global", "set", f"{f['name']}: needs Android 9+, set it on the router instead",
+                           status="blocked")]
+        want, label = {"private_dns_mode": "hostname", "private_dns_specifier": f["dot"]}, f["name"]
+    if all(current.get(k) == v for k, v in want.items()):
+        return []
+
+    def fn():
+        ctx.dev.sh("; ".join(f"settings put global {k} {v}" for k, v in want.items()))
+        check = dns_check(ctx.dev)
+        if not check["internet"]:  # a strict DNS the TV can't reach means no internet at all: put it back
+            ctx.dev.sh("; ".join(f"settings delete global {k}" if v is None else f"settings put global {k} {v}"
+                                 for k, v in current.items()))
+            raise TvError(f"the TV lost internet with {label}, so the previous DNS is back. The network may block "
+                          "DNS-over-TLS (port 853): set the filter on the router instead.")
+        if check["ads_blocked"] is False and choice != "off":
+            raise TvError("DNS set, but an ad host still resolves: the filter may not be active yet, check again later")
+    return [action("dns", "global", "set", label, fn=fn, undo={"op": "settings", "ns": "global", "values": current})]
+
+
 # A run is any combination of these steps. Dependencies are pulled in by the step itself
 # (home installs and sets up its launcher before switching off the original one, etc.).
 STEPS = {
@@ -990,7 +1213,7 @@ STEPS = {
     "debloat": "Disable bloat and tracking (presets plus your disable list)",
     "home": "Switch to the chosen home screen: installs the launcher first, then switches off the original",
     "screensaver": "Set the chosen screensaver (installs it if needed)",
-    "tweaks": "Animation speed",
+    "tweaks": "Animation speed and the DNS ad / tracker filter",
     "buttons": "Push the remote button map (installs Remote Remap if needed)",
 }
 RECIPES = {
@@ -1040,10 +1263,12 @@ def make_plan(ctx, steps=None):
         if home["launcher"] != "stock":
             acts += plan_app_setup(ctx, home["launcher"])
         acts += plan_launcher(ctx)
+    if "home" in steps:
+        acts += plan_kodi_rows(ctx)
     if "screensaver" in steps and home.get("screensaver"):
         acts += plan_app_setup(ctx, home["screensaver"]) + plan_screensaver(ctx)
     if "tweaks" in steps:
-        acts += plan_animations(ctx)
+        acts += plan_animations(ctx) + plan_dns(ctx)
     seen, out = set(), []
     for a in acts:  # a step's dependency may already be planned by another step
         key = (a["target"], a["action"])
@@ -1394,6 +1619,13 @@ def restore_defaults_plan(ctx):
     defaults = {"screensaver_components": settings.get("screensaver_components"),
                 **{k: settings.get(k) or "1.0" for k in ANIMATION_KEYS}}
     current = ctx.dev.tv_settings()
+    dns = {k: settings.get(k) for k in DNS_KEYS}  # unset = Android's automatic DNS
+    if any(current.get(k) != v for k, v in dns.items()):
+        acts.append(action("restore", "private_dns", "set", f"DNS back to {dns['private_dns_mode'] or 'automatic'}",
+                           fn=lambda: ctx.dev.sh("; ".join(f"settings delete global {k}" if v is None else
+                                                           f"settings put global {k} {shlex.quote(v)}"
+                                                           for k, v in dns.items())),
+                           undo={"op": "settings", "ns": "global", "values": {k: current.get(k) for k in DNS_KEYS}}))
     for key, value in defaults.items():
         if value and current.get(key) != value:
             ns = "secure" if key.startswith("screensaver") else "global"
@@ -1457,6 +1689,11 @@ def revert_plan(ctx, record):
         elif op == "appop":
             acts.append(action("revert", pkg, "appop", f"{u['name']} → {u['value']}",
                                fn=lambda p=pkg, n=u["name"], v=u["value"]: ctx.dev.sh(f"appops set {p} {n} {v}")))
+        elif op == "kodi-rows":
+            _, app = kodi_rows_app(ctx)
+            if app and ctx.installed(app["package"]):
+                acts.append(action("revert", app["package"], "push", "previous Kodi rows",
+                                   fn=lambda v=u["value"] or "": push_kodi_rows(ctx, v)))
         elif op == "keymap":
             app = keymap_app(ctx)
             if app and ctx.installed(app["package"]):
@@ -1674,6 +1911,11 @@ def cmd_revert(args):
 
 def cmd_install(args):
     ensure_ui()
+    prof = load_profile(args.profile)
+    if platform_of(prof) == "tizen":
+        data = tizen_install(prof, args.app_id, lambda m: print(m, file=sys.stderr))
+        emit(args, data, lambda: print(f"✓ installed {data['name']}"))
+        return EXIT_OK
     ctx = ctx_for(args)
     app_id, app = catalog_app_for(ctx, args.app_id)
     if app and ctx.installed(app["package"]) and not args.force:
@@ -1690,6 +1932,11 @@ def cmd_install(args):
 
 def cmd_uninstall(args):
     ensure_ui()
+    prof = load_profile(args.profile)
+    if platform_of(prof) == "tizen":
+        data = tizen_uninstall(prof, args.app, lambda m: print(m, file=sys.stderr))
+        emit(args, data, lambda: print(f"✓ removed {args.app}"))
+        return EXIT_OK
     rec = Workflow(args.profile, "app", CliHooks(args), yes=args.yes, measure=False, app_action="uninstall",
                    app=args.app, track=not args.no_track).run()
     return report_app_run(args, rec)
@@ -1828,41 +2075,72 @@ def cmd_guide(args):
 
 def cmd_dial(args):
     prof = load_profile(args.profile)
-    if platform_of(prof) == "roku" and args.action == "list":
-        apps = roku_apps(prof)
-    elif args.action == "list":
-        apps = dial_apps(prof)
+    if args.action == "list":
+        apps = net_apps(prof)
     else:
         if not args.app:
-            raise TvError("which app? e.g. YouTube, Netflix, AmazonInstantVideo")
-        if platform_of(prof) == "roku":
-            req = urllib.request.Request(f"http://{prof['tv']['host']}:8060/launch/{urllib.parse.quote(args.app)}",
-                                         data=b"", method="POST")
-            urllib.request.urlopen(req, timeout=5).read()
-        else:
-            dial_control(prof, args.app, args.action)
+            raise TvError("which app? the id from `tvctl dial <tv>` (e.g. YouTube, or a Samsung app id)")
+        net_app_control(prof, args.app, args.action)
         apps = [{"id": args.app, "state": args.action}]
-    emit(args, apps, lambda: [print(f"  {a.get('name', a['id']):<16} {a['state']}") for a in apps])
+    emit(args, apps, lambda: [print(f"  {a.get('name', a['id']):<16} {a['state']:<10} {a['id']}") for a in apps])
     return EXIT_OK
 
 
 def cmd_key(args):
     prof = load_profile(args.profile)
-    for k in args.keys:
-        send_key(prof, k.lower())
-        time.sleep(0.25)
-    emit(args, {"sent": args.keys}, lambda: print(f"sent {' '.join(args.keys)}"))
+    keys = [name.lower() for spec in args.keys for name in [spec.partition("*")[0]] * int(spec.partition("*")[2] or 1)]
+    if args.hold and (len(keys) != 1 or platform_of(prof) != "tizen"):
+        raise TvError("--hold takes one key, on Samsung TVs")
+    for k in keys:
+        send_key(prof, k, hold=args.hold)
+        time.sleep(0.4)
+    emit(args, {"sent": keys}, lambda: print(f"sent {' '.join(keys)}"))
+    return EXIT_OK
+
+
+def cmd_type(args):
+    prof = load_profile(args.profile)
+    if platform_of(prof) == "adb":
+        if not args.text.isascii() or any(ord(c) < 32 for c in args.text) or "%s" in args.text:
+            raise TvError("ADB typing supports printable ASCII (except literal %s); use the TV keyboard for other text")
+        dev = Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
+        if getattr(args, "replace", False):
+            # Some TV IMEs swallow Ctrl+A; deletion works on their focused input connection.
+            dev.sh("input keyevent KEYCODE_MOVE_END")
+            dev.sh("input keyevent " + " ".join(["KEYCODE_DEL"] * 200))
+        if args.text:
+            dev.sh("input text " + shlex.quote(args.text))
+        emit(args, {"typed": len(args.text)}, lambda: print("typed"))
+        return EXIT_OK
+    if "type" not in platform_caps(prof):
+        raise TvError("typing works on Android or paired Samsung TVs; elsewhere use the on-screen keyboard")
+    if getattr(args, "replace", False):
+        raise TvError("--replace is only available on Android TVs")
+    with TizenRemote(prof, wait_for_allow=10) as rc:
+        rc.type_text(args.text)
+    emit(args, {"typed": len(args.text)}, lambda: print("typed"))
     return EXIT_OK
 
 
 def cmd_screenshot(args):
     """Save what the TV shows. The agent reads the PNG to check the screen instead of asking the owner."""
     prof = load_profile(args.profile)
-    dev = Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
-    png = dev.screencap()
-    out = Path(args.out) if args.out else STATE_DIR / prof["tv"]["name"] / "screens" / f"{datetime.now():%Y%m%d-%H%M%S}.png"
+    stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+    if platform_of(prof) != "adb":  # no screenshots: the newest picture from the dashboard's phone camera
+        frame = STATE_DIR / prof["tv"]["name"] / "phonecam" / "latest.jpg"
+        after, deadline = time.time() + args.settle, time.time() + args.settle + 20
+        while time.time() < deadline and not (frame.exists() and frame.stat().st_mtime > after):
+            time.sleep(0.5)
+        if not (frame.exists() and frame.stat().st_mtime > after):
+            raise TvError("this TV can't take screenshots and no phone camera is sending pictures. Ask the owner "
+                          "to press START PHONE CAMERA in the control center ([00] live screen), open the link on a "
+                          "phone and point it at the TV.")
+        data, suffix = frame.read_bytes(), "jpg"
+    else:
+        data, suffix = Device(prof["tv"]["host"], prof["tv"].get("port", 5555)).screencap(), "png"
+    out = Path(args.out) if args.out else STATE_DIR / prof["tv"]["name"] / "screens" / f"{stamp}.{suffix}"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(png)
+    out.write_bytes(data)
     emit(args, {"screenshot": str(out)}, lambda: print(out))
     return EXIT_OK
 
@@ -1896,6 +2174,8 @@ def status_data(ctx):
         "accessibility_services": services,
         "screensaver": dev.setting("secure", "screensaver_components"),
         "animation_scale": dev.setting("global", "window_animation_scale"),
+        "dns": dev.setting("global", "private_dns_specifier") if dev.setting("global", "private_dns_mode") == "hostname"
+               else "automatic",
         "mem_available_mb": dev.mem_available_mb(),
         "disabled_packages": sum(1 for i in ctx.pkgs.values() if not i["enabled"]),
         "user_apps": sorted(p for p, i in ctx.pkgs.items() if i["user"]),
@@ -1924,9 +2204,9 @@ def cmd_status(args):
 
 def set_toml_array(text, section, key, values):
     """Rewrite `key = [...]` inside [section], keeping per-item comments of entries that stay."""
+    if not re.search(rf"^\[{re.escape(section)}\]$", text, re.M):  # e.g. [apps] in a Samsung profile
+        text = text.rstrip("\n") + f"\n\n[{section}]\n"
     sec = re.search(rf"^\[{re.escape(section)}\]\n(?:(?!^\[).*\n?)*", text, re.M)
-    if not sec:
-        raise TvError(f"profile has no [{section}] section")
     body = sec.group(0)
     m = re.search(rf"^{key}\s*=\s*\[(.*?)\]", body, re.M | re.S)
     old_lines = {}  # keep "  "pkg",  # comment" lines for items that stay (one item per line only)
@@ -1946,9 +2226,9 @@ def set_toml_array(text, section, key, values):
 
 def set_toml_value(text, section, key, value):
     """Set `key = value` in [section] (re-using a `# key = ...` template line), or comment it out if value is None."""
+    if not re.search(rf"^\[{re.escape(section)}\]$", text, re.M):  # e.g. [apps] in a Samsung profile
+        text = text.rstrip("\n") + f"\n\n[{section}]\n"
     sec = re.search(rf"^\[{re.escape(section)}\]\n(?:(?!^\[).*\n?)*", text, re.M)
-    if not sec:
-        raise TvError(f"profile has no [{section}] section")
     body = sec.group(0)
     live = re.search(rf"^{key}\s*=\s*[^#\n]*?(\s+#.*)?$", body, re.M)
     template = re.search(rf"^#\s*{key}\s*=.*$", body, re.M)
@@ -1966,7 +2246,7 @@ def set_toml_value(text, section, key, value):
 
 
 def set_home_settings(profile, values):
-    """values: subset of launcher / screensaver / animation_scale; None removes the setting."""
+    """values: subset of launcher / screensaver / animation_scale / dns; None removes the setting."""
     prof = load_profile(profile)
     catalog = load_catalog()
     text = prof["_path"].read_text()
@@ -1979,7 +2259,9 @@ def set_home_settings(profile, values):
             value = float(value)
             if not 0 <= value <= 2:
                 raise TvError("animation_scale must be 0–2")
-        if key not in ("launcher", "screensaver", "animation_scale"):
+        if key == "dns" and value is not None and value != "off" and value not in DNS_FILTERS:
+            raise TvError(f"unknown DNS filter {value}; choose {', '.join(DNS_FILTERS)} or off")
+        if key not in ("launcher", "screensaver", "animation_scale", "dns"):
             raise TvError(f"unknown home setting {key}")
         text = set_toml_value(text, "home", key, value)
     tomllib.loads(text)
@@ -2429,7 +2711,7 @@ PLATFORMS = {
                "caps": ["dial", "guide", "keys?"], "port": 56789, "dial": "http://{host}:56789/apps/"},
     "roku": {"label": "Roku TV", "caps": ["roku-apps", "keys", "guide"], "port": 8060},
     "webos": {"label": "LG webOS", "caps": ["dial", "guide"], "port": 3000},
-    "tizen": {"label": "Samsung Tizen", "caps": ["dial", "guide"], "port": 8001},
+    "tizen": {"label": "Samsung Tizen", "caps": ["tizen-apps", "pair?", "guide"], "port": 8001},
     "dial": {"label": "Smart TV (DIAL only)", "caps": ["dial", "guide"], "port": 0},
 }
 CAP_TEXT = {
@@ -2437,6 +2719,9 @@ CAP_TEXT = {
     "dial": "start and stop YouTube / Netflix / Prime Video over the network (DIAL)",
     "roku-apps": "list and launch installed channels",
     "keys": "send remote keys over the network", "keys?": "remote keys over the network (if the TV allows it)",
+    "tizen-apps": "list, open and close installed apps over the network",
+    "pair": "remote keys and typing over the network, after choosing Allow once on the TV",
+    "type": "type text into the TV's on-screen keyboard",
     "guide": "guided preparation walkthrough",
 }
 NOT_ANDROID = ("Not Android: no developer mode, so no debloat, app installs, launcher or screenshots. "
@@ -2450,8 +2735,19 @@ VESTEL_KEYS = {"up": 1020, "down": 1019, "left": 1021, "right": 1022, "ok": 1053
                "menu": 1048, "volup": 1016, "voldown": 1017, "mute": 1013, "power": 1012, "info": 1018,
                "source": 1056, "play": 1025, "pause": 1049}
 ADB_KEYS = {"up": "DPAD_UP", "down": "DPAD_DOWN", "left": "DPAD_LEFT", "right": "DPAD_RIGHT", "ok": "DPAD_CENTER",
-            "back": "BACK", "home": "HOME", "menu": "MENU", "volup": "VOLUME_UP", "voldown": "VOLUME_DOWN",
+            "back": "BACK", "enter": "ENTER", "home": "HOME", "menu": "MENU", "volup": "VOLUME_UP", "voldown": "VOLUME_DOWN",
             "mute": "VOLUME_MUTE", "power": "POWER", "info": "INFO", "play": "MEDIA_PLAY_PAUSE"}
+
+
+TIZEN_KEYS = {"up": "KEY_UP", "down": "KEY_DOWN", "left": "KEY_LEFT", "right": "KEY_RIGHT", "ok": "KEY_ENTER",
+              "back": "KEY_RETURN", "home": "KEY_HOME", "menu": "KEY_MENU", "volup": "KEY_VOLUP",
+              "voldown": "KEY_VOLDOWN", "mute": "KEY_MUTE", "power": "KEY_POWER", "info": "KEY_INFO",
+              "source": "KEY_SOURCE", "play": "KEY_PLAY", "pause": "KEY_PAUSE", "exit": "KEY_EXIT"}
+# Samsung app ids (several per app: they changed over the years). Probed over REST; missing ones are not shown.
+TIZEN_APPS = {"YouTube": ["111299001912"], "Netflix": ["3201907018807", "11101200001"],
+              "Prime Video": ["3201910019365", "3201512006785"], "Disney+": ["3201901017640"],
+              "Apple TV": ["3201807016597"], "Spotify": ["3201606009684"], "Plex": ["3201512006963"],
+              "Internet": ["org.tizen.browser"]}
 
 
 def platform_of(prof):
@@ -2537,6 +2833,10 @@ def identify(host, ports=None, ssdp=None):
         if re.search(rf"\b{b.lower()}\b", text):
             brand = b
             break
+    if platform == "tizen":
+        info = tizen_info(host) or {}
+        name, model = info.get("name") or name, info.get("modelName") or model
+        brand = brand or "Samsung"
     if platform == "vestel" and not dial:
         dial = PLATFORMS["vestel"]["dial"].format(host=host)
     return {"platform": platform, "label": PLATFORMS.get(platform, {}).get("label"), "brand": brand or maker,
@@ -2544,6 +2844,221 @@ def identify(host, ports=None, ssdp=None):
             "udn": next((d["udn"] for d in descs if d.get("udn")), None),
             "keys_port": 4660 if (platform == "vestel" and 4660 in ports) else None,
             "upnp": [{k: v for k, v in d.items() if v} for d in descs]}
+
+
+# ---- Samsung Tizen: the TV's local remote-control API. REST on 8001 (info, app status: no prompt) and a
+# WebSocket over TLS on 8002 (keys, typing, launching). The first WebSocket connection shows "Allow" on the
+# TV; the token it returns is kept in state/<tv>/samsung-token. Protocol as used by
+# github.com/victaphu/glass-home-samsung-tv (tools/tvremote.py, MIT).
+
+def tizen_rest(host, path, method="GET", timeout=4):
+    req = urllib.request.Request(f"http://{host}:8001{path}", method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read().decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace")
+
+
+def tizen_info(host):
+    """name, modelName, PowerState, developerMode, wifiMac, OS… (no prompt on the TV), or None."""
+    try:
+        status, body = tizen_rest(host, "/api/v2/", timeout=3)
+        return json.loads(body).get("device") if status == 200 else None
+    except (OSError, ValueError):
+        return None
+
+
+def tizen_token_file(prof):
+    return STATE_DIR / prof["tv"]["name"] / "samsung-token"
+
+
+class TizenRemote:
+    """Just enough RFC 6455 for the TV: masked text frames out, ping/pong, close."""
+    NAME = base64.b64encode(b"tv-override").decode()
+
+    def __init__(self, prof, wait_for_allow=45):
+        self.prof, self.host = prof, prof["tv"]["host"]
+        token_file = tizen_token_file(prof)
+        token = token_file.read_text().strip() if token_file.exists() else None
+        path = f"/api/v2/channels/samsung.remote.control?name={self.NAME}" + (f"&token={token}" if token else "")
+        ctx = ssl.create_default_context()
+        ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE  # the TV's certificate is self-signed
+        try:
+            raw = socket.create_connection((self.host, 8002), timeout=10)
+        except OSError as e:
+            raise TvError(f"the TV's remote API (port 8002) does not answer: {e}")
+        self.sock, self.buf = ctx.wrap_socket(raw, server_hostname=self.host), b""
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {self.host}:8002\r\nUpgrade: websocket\r\n"
+                           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise TvError("the TV closed the connection during the handshake")
+            head += chunk
+        head, self.buf = head.split(b"\r\n\r\n", 1)
+        status = head.split(b"\r\n", 1)[0].decode(errors="replace")
+        if " 101 " not in status:
+            raise TvError(f"the TV refused the connection: {status}")
+        deadline = time.time() + wait_for_allow
+        while True:
+            try:
+                msg = self.recv(deadline)
+            except socket.timeout:
+                self.close()
+                raise TvError("no answer from the TV: choose Allow on the TV screen, then try again")
+            event = msg.get("event")
+            if event == "ms.channel.connect":
+                new = (msg.get("data") or {}).get("token")
+                if new and new != token:
+                    token_file.parent.mkdir(parents=True, exist_ok=True)
+                    token_file.write_text(new)
+                    token_file.chmod(0o600)
+                return
+            if event in ("ms.channel.unauthorized", "ms.channel.timeOut"):
+                self.close()
+                raise TvError("the TV refused the remote (Deny was chosen or the prompt timed out). Allow it under "
+                              "Settings › General › External Device Manager › Device Connection Manager › Device List")
+
+    def _frame(self, opcode, payload):
+        mask, n = os.urandom(4), len(payload)
+        head = (struct.pack("!BB", 0x80 | opcode, 0x80 | n) if n < 126 else
+                struct.pack("!BBH", 0x80 | opcode, 0xFE, n) if n < 65536 else struct.pack("!BBQ", 0x80 | opcode, 0xFF, n))
+        self.sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+    def _read(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise TvError("the TV closed the connection")
+            self.buf += chunk
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def recv(self, deadline):
+        """Next JSON message. The TV pings regularly, so a hard deadline replaces the socket timeout."""
+        message = b""
+        while True:
+            if deadline - time.time() <= 0:
+                raise socket.timeout()
+            self.sock.settimeout(deadline - time.time())
+            b1, b2 = self._read(2)
+            n = b2 & 0x7F
+            n = struct.unpack("!H", self._read(2))[0] if n == 126 else struct.unpack("!Q", self._read(8))[0] if n == 127 else n
+            mask = self._read(4) if b2 & 0x80 else None
+            payload = self._read(n)
+            if mask:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            op = b1 & 0x0F
+            if op == 0x9:
+                self._frame(0xA, payload)
+            elif op == 0x8:
+                raise TvError("the TV closed the connection")
+            elif op in (0x0, 0x1, 0x2):
+                message += payload
+                if b1 & 0x80:
+                    return json.loads(message.decode("utf-8", errors="replace"))
+
+    def send(self, obj):
+        self._frame(0x1, json.dumps(obj).encode())
+
+    def key(self, code, cmd="Click"):
+        self.send({"method": "ms.remote.control", "params": {"Cmd": cmd, "DataOfCmd": code, "Option": "false",
+                                                             "TypeOfRemote": "SendRemoteKey"}})
+
+    def type_text(self, text):
+        self.send({"method": "ms.remote.control", "params": {"Cmd": base64.b64encode(text.encode()).decode(),
+                                                             "DataOfCmd": "base64", "TypeOfRemote": "SendInputString"}})
+        time.sleep(0.5)
+        self.send({"method": "ms.remote.control", "params": {"TypeOfRemote": "SendInputEnd"}})
+
+    def launch(self, app_id):
+        """Newer firmware wants DEEP_LINK, older NATIVE_LAUNCH; confirmed through the REST status."""
+        for how in ("DEEP_LINK", "NATIVE_LAUNCH"):
+            self.send({"method": "ms.channel.emit", "params": {"event": "ed.apps.launch", "to": "host",
+                                                               "data": {"appId": app_id, "action_type": how}}})
+            for _ in range(12):
+                time.sleep(0.5)
+                if tizen_app_state(self.host, app_id).get("visible"):
+                    return how
+        raise TvError(f"the TV did not open {app_id}")
+
+    def close(self):
+        try:
+            self._frame(0x8, b"")
+            self.sock.close()
+        except OSError:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def tizen_app_state(host, app_id):
+    try:
+        status, body = tizen_rest(host, f"/api/v2/applications/{urllib.parse.quote(app_id)}", timeout=3)
+        return json.loads(body) if status == 200 else {"missing": status == 404}
+    except (OSError, ValueError):
+        return {}
+
+
+def tizen_apps(prof):
+    host, out = prof["tv"]["host"], []
+    probes = [(name, app_id) for name, ids in TIZEN_APPS.items() for app_id in ids]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        states = list(pool.map(lambda x: tizen_app_state(host, x[1]), probes))
+    seen = set()
+    for (name, app_id), stt in zip(probes, states):
+        if name in seen or not stt or stt.get("missing"):
+            continue
+        seen.add(name)
+        out.append({"id": app_id, "name": name,
+                    "state": "running" if stt.get("visible") or stt.get("running") else "stopped"})
+    return out
+
+
+def tizen_pair(prof):
+    with TizenRemote(prof):
+        pass
+    return {"paired": True, "token_file": str(tizen_token_file(prof).relative_to(ROOT))}
+
+
+def net_apps(prof):
+    """Apps tvctl can open on a TV without ADB: Roku channels, Samsung apps, else DIAL."""
+    plat = platform_of(prof)
+    if plat == "roku":
+        return roku_apps(prof)
+    if plat == "tizen":
+        return tizen_apps(prof)
+    return dial_apps(prof)
+
+
+def net_app_control(prof, app, what):
+    plat, host = platform_of(prof), prof["tv"]["host"]
+    if plat == "roku":
+        if what != "launch":
+            raise TvError("Roku channels can only be launched; press Home to leave them")
+        req = urllib.request.Request(f"http://{host}:8060/launch/{urllib.parse.quote(app)}", data=b"", method="POST")
+        urllib.request.urlopen(req, timeout=5).read()
+    elif plat == "tizen":
+        if what == "stop":
+            status, body = tizen_rest(host, f"/api/v2/applications/{urllib.parse.quote(app)}", "DELETE")
+            if status >= 300:
+                raise TvError(f"the TV refused to close {app}: HTTP {status}")
+        elif tizen_token_file(prof).exists():
+            with TizenRemote(prof) as rc:
+                rc.launch(app)
+        else:  # unpaired: older TVs (2016–2019) still open apps over REST
+            status, _ = tizen_rest(host, f"/api/v2/applications/{urllib.parse.quote(app)}", "POST")
+            if status >= 300:
+                raise TvError("this TV needs pairing to open apps: tvctl pair <tv>, then choose Allow on the TV")
+    else:
+        dial_control(prof, app, what)
 
 
 def dial_base(prof):
@@ -2601,7 +3116,7 @@ def roku_apps(prof):
             for m in re.finditer(r'<app id="([^"]+)"[^>]*>([^<]*)</app>', xml)]
 
 
-def send_key(prof, key):
+def send_key(prof, key, hold=0):
     """One remote key, named like the dashboard pad: up/down/left/right/ok/back/home/menu/volup/voldown/mute/…"""
     plat, t = platform_of(prof), prof["tv"]
     if plat == "adb":
@@ -2621,6 +3136,18 @@ def send_key(prof, key):
                 sk.sendall(f"{VESTEL_KEYS[key]}\r\n".encode())
         except OSError:
             raise TvError("this TV does not accept network keys (port 4660 closed)")
+    elif plat == "tizen":
+        if key not in TIZEN_KEYS:
+            raise TvError(f"unknown key {key}")
+        if not tizen_token_file(prof).exists():
+            raise TvError("pair first: tvctl pair <tv> (then choose Allow on the TV)")
+        with TizenRemote(prof, wait_for_allow=10) as rc:
+            if hold:
+                rc.key(TIZEN_KEYS[key], "Press")
+                time.sleep(hold)
+                rc.key(TIZEN_KEYS[key], "Release")
+            else:
+                rc.key(TIZEN_KEYS[key])
     else:
         raise TvError(f"remote keys are not supported on {PLATFORMS.get(plat, {}).get('label', plat)} yet")
 
@@ -2632,6 +3159,9 @@ def platform_caps(prof):
         caps.remove("keys?")
         if probe(prof["tv"]["host"], [4660], timeout=1)[1]:
             caps.append("keys")
+    if "pair?" in caps:  # Samsung: keys and typing once the TV allowed this computer
+        caps.remove("pair?")
+        caps += ["keys", "type"] if tizen_token_file(prof).exists() else ["pair"]
     return caps
 
 
@@ -2641,17 +3171,23 @@ def discover_network(prof):
     ident = identify(t["host"])
     plat = platform_of(prof)
     try:
-        apps = roku_apps(prof) if plat == "roku" else dial_apps(prof) if dial_base(prof) else []
+        apps = net_apps(prof) if plat in ("roku", "tizen") or dial_base(prof) else []
     except (TvError, OSError):
         apps = []
     caps = platform_caps(prof)
     notes = [{"level": "warn", "text": NOT_ANDROID}]
     if "keys" not in caps and plat in ("vestel",):
         notes.append({"level": "info", "text": "Remote keys over the network are off on this TV (port 4660 closed)."})
+    samsung = tizen_info(t["host"]) if plat == "tizen" else None
+    if "pair" in caps:
+        notes.append({"level": "info", "text": "Pair once (tvctl pair, or PAIR REMOTE in the control center) and "
+                                               "choose Allow on the TV to send keys and open apps."})
+    if samsung and samsung.get("developerMode") == "1":
+        notes.append({"level": "info", "text": "Developer Mode is on (only needed to install your own apps)."})
     d = {"taken": now_iso(), "tv": t["name"], "platform": plat, "platform_label": PLATFORMS[plat]["label"],
          "brand": ident.get("brand"), "model": ident.get("model") or t.get("model"), "name": ident.get("name"),
          "network": [{"iface": "lan", "ip": t["host"]}], "ports": ident["ports"], "upnp": ident["upnp"],
-         "dial_url": ident.get("dial_url"), "apps": apps, "capabilities": caps,
+         "dial_url": ident.get("dial_url"), "apps": apps, "capabilities": caps, "samsung": samsung,
          "capabilities_text": [CAP_TEXT[c] for c in caps if c in CAP_TEXT],
          "presets": [p.get("preset", {}).get("name") for p in active_presets(t.get("presets", []))],
          "live_tv": {"tuner_inputs": [], "external_inputs": 0, "channels": None},
@@ -2684,6 +3220,335 @@ def net_prof(args, need=None):
         raise TvError(f"{PLATFORMS[platform_of(prof)]['label']} can't do this. It can: "
                       + "; ".join(CAP_TEXT[c] for c in platform_caps(prof) if c in CAP_TEXT))
     return prof
+
+
+# ---- Samsung Developer Mode: own apps on Tizen TVs (TizenTube, Override Home)
+# Apps go in as signed .wgt packages over sdb (port 26101) while the TV is in Developer Mode. Recent TVs only
+# accept packages signed with a free Samsung certificate that lists the TV's device id (DUID); TizenTube's
+# boot service needs the Partner level. The owner turns on Developer Mode (with this computer's IP), accepts
+# Samsung's SDK licence and signs in to a Samsung account once, in the browser. Tools: Samsung's Tizen SDK
+# command-line tools in ~/tizen-studio and its certificate tool (github.com/Samsung/tizen-agent-skills,
+# pinned). Certificates and the generated password stay out of the repo, in ~/.tv-override/samsung.
+
+SAMSUNG_DIR = Path(os.environ.get("TVCTL_SAMSUNG_DIR", Path.home() / ".tv-override" / "samsung"))
+TIZEN_HOME = Path(os.environ.get("TIZEN_HOME", Path.home() / "tizen-studio"))
+TIZEN_SDK_URL = "https://download.tizen.org/sdk/Installer/tizen-sdk_10.0/web-cli_Tizen_SDK_10.0_{os}-64.bin"
+CERT_TOOL_REPO = "https://github.com/Samsung/tizen-agent-skills"
+CERT_TOOL_COMMIT = "5b1c20e8600b8b6d973907a5c102b2d278f8d99f"
+SIGN_PROFILE = "tv-override"
+SDB_PORT = 26101
+DOCK_DEFAULT = ["tizentube", "youtube", "netflix", "prime", "disney", "tvplus", "livetv", "browser"]
+
+
+class OwnerStep(TvError):
+    """Only the owner can do the next step (exit code 2)."""
+
+
+def tizen_paths():
+    tool = SAMSUNG_DIR / "tizen-agent-skills" / "tizen-sdk-skills" / "common"
+    return {"tizen": TIZEN_HOME / "tools" / "ide" / "bin" / "tizen", "sdb": TIZEN_HOME / "tools" / "sdb",
+            "tool": SAMSUNG_DIR / "tizen-agent-skills", "certcli": tool / "lib" / "cli" / "cert-manager-cli.js",
+            "sdkinit": tool / "lib" / "cli" / "sdk-init-cli.js",
+            "ca": tool / "assets" / "samsung-tv-ca" / "vd_tizen_dev_partner2.crt",
+            "password": SAMSUNG_DIR / "cert-password.env", "duids": SAMSUNG_DIR / "duids.txt"}
+
+
+def tizen_keystore():
+    info = TIZEN_HOME / "sdk.info"
+    data = Path.home() / "tizen-studio-data"
+    if info.exists():
+        m = re.search(r"^TIZEN_SDK_DATA_PATH=(.+)$", info.read_text(), re.M)
+        data = Path(m.group(1).strip()) if m else data
+    return data, data / "keystore" / "samsung" / SIGN_PROFILE
+
+
+def tz(args, timeout=300, ok=None):
+    """Run a Tizen SDK tool. `ok`: text that must appear in the output (the tools often exit 0 on failure)."""
+    code, out, err = run([str(a) for a in args], timeout=timeout)
+    text = (out + err).strip()
+    if code or (ok and ok.lower() not in text.lower()):
+        raise TvError(f"{Path(str(args[0])).name} {args[1]} failed: {text[-400:] or f'exit {code}'}")
+    return text
+
+
+def sdb_target(prof):
+    return f"{prof['tv']['host']}:{SDB_PORT}"
+
+
+def this_ip(toward):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((toward, 9))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+def rosetta_ok():
+    if sys.platform != "darwin" or os.uname().machine != "arm64":
+        return True
+    return run(["arch", "-x86_64", "/usr/bin/true"], timeout=20)[0] == 0
+
+
+def node_version():
+    if not shutil.which("node"):
+        return None
+    m = re.match(r"v(\d+)", run(["node", "--version"], timeout=20)[1])
+    return int(m.group(1)) if m else None
+
+
+def tizen_apps_catalog():
+    return load_catalog("tizen")
+
+
+def tizen_status(prof, connect=True):
+    """Checklist for installing own apps on this Samsung TV. owner=True: only the owner can do that step."""
+    t, P = prof["tv"], tizen_paths()
+    info = tizen_info(t["host"]) or {}
+    me = this_ip(t["host"])
+    checks, extra = [], {}
+
+    def add(id_, title, ok, detail="", owner=False):
+        checks.append({"id": id_, "title": title, "ok": bool(ok), "detail": detail, "owner": owner})
+        return ok
+
+    dev_ip = info.get("developerIP")
+    add("developer-mode", "Developer Mode on, Host PC IP = this computer",
+        info.get("developerMode") == "1" and (not dev_ip or dev_ip == me),
+        "TV unreachable" if not info else
+        f"Apps › App Settings › 1 2 3 4 5 › Developer mode On › Host PC IP {me} › OK, then restart the TV"
+        + (f" (it has {dev_ip} now)" if dev_ip and dev_ip != me else ""), owner=True)
+    if sys.platform == "darwin" and os.uname().machine == "arm64":
+        add("rosetta", "Rosetta (Samsung's tools are Intel-only)", rosetta_ok(),
+            "run in Terminal: softwareupdate --install-rosetta (asks for the Mac password)", owner=True)
+    nv = node_version()
+    add("node", "Node.js 20+ (Samsung's certificate tool)", nv and nv >= 20,
+        f"found {nv}" if nv else "install Node.js 20+ (e.g. brew install node)", owner=not nv)
+    sdk = add("sdk", "Samsung Tizen SDK command-line tools", P["tizen"].exists() and P["sdb"].exists(),
+              f"{TIZEN_HOME} (about 330 MB; needs the owner to accept Samsung's licence)")
+    tool = P["certcli"].exists() and run(["git", "-C", str(P["tool"]), "rev-parse", "HEAD"])[1].strip() == CERT_TOOL_COMMIT
+    add("cert-tool", "Samsung certificate tool (pinned)", tool, f"{CERT_TOOL_REPO} @ {CERT_TOOL_COMMIT[:7]}")
+    connected = False
+    if sdk and connect and info.get("developerMode") == "1":
+        out = run([str(P["sdb"]), "connect", sdb_target(prof)], timeout=30)[1]
+        connected = "connected" in out.lower() and "fail" not in out.lower()
+        if connected:
+            cap = run([str(P["sdb"]), "-s", sdb_target(prof), "capability"], timeout=30)[1]
+            m = re.search(r"platform_version:([\d.]+)", cap)
+            extra["tizen_version"] = m.group(1) if m else None
+            if not t.get("duid"):
+                duid = run([str(P["sdb"]), "-s", sdb_target(prof), "shell", "0", "getduid"], timeout=30)[1].strip()
+                if re.fullmatch(r"[A-Za-z0-9._#-]{6,64}", duid):
+                    set_profile_value(t["name"], "tv", "duid", duid)
+                    t["duid"] = duid
+    add("connected", "This computer connected to the TV (sdb)", connected,
+        "needs Developer Mode and the SDK" if not connected else sdb_target(prof))
+    add("duid", "TV device id (DUID) read", t.get("duid"), t.get("duid") or "read once connected")
+    _, keys = tizen_keystore()
+    duids = P["duids"].read_text().split() if P["duids"].exists() else []
+    registered = P["tizen"].exists() and SIGN_PROFILE in tz_profiles()
+    add("certificate", "Samsung certificate for this TV (Partner level)",
+        (keys / "author.p12").exists() and (keys / "distributor.p12").exists() and t.get("duid") in duids and registered,
+        "the owner signs in to a Samsung account once, in the browser", owner=not (keys / "author.p12").exists())
+    apps = {}
+    for app_id, app in tizen_apps_catalog().items():
+        st = tizen_app_state(t["host"], app["app_id"]) if info else {}
+        apps[app_id] = {"name": app["name"], "installed": bool(st) and not st.get("missing"),
+                        "version": app.get("version"), "note": app.get("note", "")}
+    return {"tv": t["name"], "this_ip": me, "checks": checks, "ready": all(c["ok"] for c in checks),
+            "apps": apps, "dock": prof["home"].get("dock", DOCK_DEFAULT), **extra}
+
+
+def tz_profiles():
+    data, _ = tizen_keystore()
+    xml = data / "profile" / "profiles.xml"
+    return re.findall(r'<profile name="([^"]+)"', xml.read_text()) if xml.exists() else []
+
+
+def set_profile_value(name, section, key, value):
+    path = profile_path(name)
+    text = set_toml_value(path.read_text(), section, key, value)
+    tomllib.loads(text)
+    path.write_text(text)
+
+
+def tizen_setup(prof, log, accept_license=False, country=None):
+    """Do every step that is not done yet. Raises OwnerStep where the owner has to act."""
+    P = tizen_paths()
+    SAMSUNG_DIR.mkdir(parents=True, exist_ok=True)
+    SAMSUNG_DIR.chmod(0o700)
+    st = tizen_status(prof, connect=False)
+    todo = {c["id"]: c for c in st["checks"] if not c["ok"]}
+    for owner_first in ("developer-mode", "rosetta", "node"):
+        if owner_first in todo:
+            c = todo[owner_first]
+            raise OwnerStep(f"{c['title']}: {c['detail']}")
+    if "sdk" in todo:
+        installer = SAMSUNG_DIR / Path(TIZEN_SDK_URL).name.format(os="macos" if sys.platform == "darwin" else "ubuntu")
+        if not installer.exists():
+            log(f"downloading Samsung's Tizen SDK installer (about 330 MB, download.tizen.org)…")
+            url = TIZEN_SDK_URL.format(os="macos" if sys.platform == "darwin" else "ubuntu")
+            tmp = installer.with_suffix(".part")
+            with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+                shutil.copyfileobj(r, f, 1 << 20)
+            tmp.rename(installer)
+            installer.chmod(0o755)
+        licence = SAMSUNG_DIR / "tizen-sdk-licence.txt"
+        if not accept_license:
+            licence.write_text(run([str(installer), "--show-license"], timeout=120)[1])
+            raise OwnerStep(f"Samsung's SDK licence needs the owner's OK: read {licence}, then accept it "
+                            "(control center: ACCEPT & INSTALL, or tvctl tizen setup <tv> --accept-license)")
+        log(f"installing the Tizen SDK tools into {TIZEN_HOME} (a few minutes)…")
+        tz([installer, "--accept-license", TIZEN_HOME], timeout=1800)
+    if "cert-tool" in todo:
+        log("fetching Samsung's certificate tool…")
+        if not (P["tool"] / ".git").exists():
+            tz(["git", "clone", "--quiet", CERT_TOOL_REPO, P["tool"]], timeout=300)
+        tz(["git", "-C", P["tool"], "fetch", "--quiet", "origin", CERT_TOOL_COMMIT], timeout=300)
+        tz(["git", "-C", P["tool"], "checkout", "--quiet", CERT_TOOL_COMMIT], timeout=60)
+        tz(["node", P["sdkinit"], TIZEN_HOME], timeout=60)
+    st = tizen_status(prof)
+    todo = {c["id"]: c for c in st["checks"] if not c["ok"]}
+    if "connected" in todo or "duid" in todo:
+        raise TvError(f"can't reach the TV over sdb ({sdb_target(prof)}): is Developer Mode on with Host PC IP "
+                      f"{st['this_ip']}, and was the TV restarted after switching it on?")
+    if "certificate" in todo:
+        tizen_certificate(prof, log, country)
+    return tizen_status(prof)
+
+
+def tizen_certificate(prof, log, country=None):
+    P, duid = tizen_paths(), prof["tv"]["duid"]
+    _, keys = tizen_keystore()
+    if not P["password"].exists():  # our own random certificate password, never the owner's
+        P["password"].write_text(f"TIZEN_CERTIFICATE_PASSWORD={secrets.token_urlsafe(18).replace('-', 'x').replace('_', 'y')}Aa1\n")
+        P["password"].chmod(0o600)
+    password = P["password"].read_text().split("=", 1)[1].strip()
+    cert = ["node", P["certcli"]]
+    if not (keys / "author.p12").exists():
+        log("a browser window opens: the owner signs in to their Samsung account (waits up to 5 minutes)…")
+        tz(cert + ["generate-samsung-author", "--profile-name", SIGN_PROFILE, "--identity", "tv-override",
+                   "--password-file", P["password"]] + (["--country", country] if country else []), timeout=420)
+    duids = P["duids"].read_text().split() if P["duids"].exists() else []
+    if duid not in duids or not (keys / "distributor.p12").exists():
+        duids = sorted(set(duids) | {duid})  # one distributor certificate covers all the owner's TVs
+        log(f"making the distributor certificate for {len(duids)} TV(s); Samsung may ask to sign in again…")
+        tz(cert + ["generate-samsung-distributor", "--profile-name", SIGN_PROFILE, "--duid-list", ",".join(duids),
+                   "--privilege", "Partner", "--password-file", P["password"]], timeout=420)
+        P["duids"].write_text("\n".join(duids) + "\n")
+    backup = SAMSUNG_DIR / "author-backup.p12"  # every update of an app must be signed with this author key
+    shutil.copy2(keys / "author.p12", backup)
+    backup.chmod(0o600)
+    log("registering the signing profile…")
+    if SIGN_PROFILE in tz_profiles():
+        run([str(P["tizen"]), "security-profiles", "remove", "-n", SIGN_PROFILE], timeout=60)
+    # the tizen CLI only takes passwords as arguments: briefly visible to other processes on this computer
+    tz([P["tizen"], "security-profiles", "add", "-n", SIGN_PROFILE, "-A", "-a", keys / "author.p12", "-p", password,
+        "-d", keys / "distributor.p12", "-dp", password, "-dc", P["ca"]], timeout=60)
+    data, _ = tizen_keystore()
+    tz([P["tizen"], "cli-config", f"profiles.path={data / 'profile' / 'profiles.xml'}"], timeout=60)
+
+
+def build_home(prof, out):
+    """Override Home with this TV's dock, packaged and signed."""
+    P = tizen_paths()
+    app_dir = out / "app"
+    if app_dir.exists():
+        shutil.rmtree(app_dir)
+    shutil.copytree(ROOT / "samsung-home", app_dir)
+    home = prof["home"]
+    cfg = {"tv": prof["tv"]["name"], "dock": home.get("dock", DOCK_DEFAULT),
+           "saverMinutes": home.get("saver_minutes", 5), "hour12": bool(home.get("hour12", False))}
+    (app_dir / "js" / "config.js").write_text(f"/* {prof['tv']['name']}: generated by tvctl from [home] */\n"
+                                              f"window.OVERRIDE_HOME = {json.dumps(cfg)};\n")
+    tz([P["tizen"], "build-web", "-e", ".*", "--", app_dir], timeout=300)
+    tz([P["tizen"], "package", "-t", "wgt", "-s", SIGN_PROFILE, "--", app_dir / ".buildResult"], timeout=300)
+    return max((app_dir / ".buildResult").glob("*.wgt"), key=lambda p: p.stat().st_mtime)
+
+
+def tizen_install(prof, app_id, log):
+    P = tizen_paths()
+    catalog = tizen_apps_catalog()
+    if app_id not in catalog:
+        raise TvError(f"unknown Samsung app {app_id}; known: {', '.join(catalog)}")
+    app = catalog[app_id]
+    st = tizen_status(prof)
+    missing = [c["title"] for c in st["checks"] if not c["ok"]]
+    if missing:
+        raise TvError("set up first (tvctl tizen setup): " + "; ".join(missing))
+    out = state_dir(prof) / "tizen-build" / app_id
+    out.mkdir(parents=True, exist_ok=True)
+    if app["source"] == "build":
+        log(f"building {app['name']} for {prof['tv']['name']}…")
+        wgt = build_home(prof, out)
+    else:
+        pick = app
+        version = float(st.get("tizen_version") or 0)
+        if app.get("min_tizen") and version and version < app["min_tizen"]:
+            pick = app["older"]
+            log(f"Tizen {version}: using the build for older TVs")
+        src = ROOT / pick["file"]
+        if hashlib.sha256(src.read_bytes()).hexdigest() != pick["sha256"]:
+            raise TvError(f"{src.name}: checksum mismatch, refusing to install")
+        log(f"signing {src.name} with this computer's Samsung certificate…")
+        signed = out / "signed"
+        if signed.exists():
+            shutil.rmtree(signed)
+        signed.mkdir()
+        tz([P["tizen"], "package", "-t", "wgt", "-s", SIGN_PROFILE, "-o", signed, "--", src], timeout=300)
+        wgt = max(signed.glob("*.wgt"), key=lambda p: p.stat().st_mtime)
+    target = sdb_target(prof)
+    log(f"installing {app['name']} on the TV…")
+    run([str(P["tizen"]), "install-permit", "-s", target], timeout=120)  # older TVs need the permit file
+    tz([P["tizen"], "install", "-s", target, "-n", wgt.name, "--", wgt.parent], timeout=600, ok="success")
+    tz([P["tizen"], "run", "-s", target, "-p", app["app_id"]], timeout=120)
+    track_app(prof["tv"]["name"], app_id, True)
+    log_history(prof, [{"step": "app", "target": app["package"], "action": "install", "status": "done",
+                        "detail": f"{app['name']} {app.get('version', '')} (Samsung)"}])
+    return {"installed": app_id, "name": app["name"], "app_id": app["app_id"]}
+
+
+def tizen_uninstall(prof, app_id, log):
+    P = tizen_paths()
+    app = tizen_apps_catalog().get(app_id)
+    if not app:
+        raise TvError(f"unknown Samsung app {app_id}")
+    run([str(P["sdb"]), "connect", sdb_target(prof)], timeout=30)
+    log(f"removing {app['name']}…")
+    tz([P["tizen"], "uninstall", "-s", sdb_target(prof), "-p", app["package"]], timeout=300, ok="success")
+    track_app(prof["tv"]["name"], app_id, False)
+    log_history(prof, [{"step": "app", "target": app["package"], "action": "uninstall", "status": "done",
+                        "detail": app["name"]}])
+    return {"uninstalled": app_id}
+
+
+def dock_apps():
+    """Apps Override Home knows (samsung-home/js/apps.js): [{key, label}]."""
+    js = (ROOT / "samsung-home" / "js" / "apps.js").read_text()
+    return [{"key": k, "label": l} for k, l in re.findall(r"^\s*(\w+): \{ label: '([^']+)'", js, re.M)]
+
+
+def set_dock(name, dock):
+    known = {a["key"] for a in dock_apps()}
+    if not isinstance(dock, list) or not all(isinstance(k, str) and k in known for k in dock) or len(dock) > 12:
+        raise TvError(f"dock: a list of up to 12 of {', '.join(sorted(known))}")
+    set_profile_value(name, "home", "dock", list(dict.fromkeys(dock)))
+
+
+def cmd_tizen(args):
+    prof = load_profile(args.profile)
+    if platform_of(prof) != "tizen":
+        raise TvError("tvctl tizen is for Samsung TVs")
+    log = lambda m: print(m, file=sys.stderr)
+    if args.tizen_cmd == "setup":
+        data = tizen_setup(prof, log, accept_license=args.accept_license, country=args.country)
+    else:
+        data = tizen_status(prof)
+    emit(args, data, lambda: [print(f"  {'✓' if c['ok'] else '○'} {c['title']}"
+                                    + ("" if c["ok"] else f"  – {c['detail']}" + ("  [owner]" if c["owner"] else "")))
+                              for c in data["checks"]]
+         + [print(f"  {'●' if a['installed'] else '·'} {a['name']}") for a in data["apps"].values()])
+    return EXIT_OK if data["ready"] or args.tizen_cmd == "status" else EXIT_USER
 
 
 # ---- find / init
@@ -2937,6 +3802,16 @@ def cmd_find(args):
 
 
 def cmd_pair(args):
+    if (PROFILES_DIR / f"{args.address}.toml").exists():
+        prof = load_profile(args.address)
+        if platform_of(prof) != "tizen":
+            raise TvError("profile pairing is for Samsung TVs; Android: tvctl pair IP:PORT CODE")
+        print("Choose Allow on the TV screen (waiting up to 45 s)…", file=sys.stderr)
+        data = tizen_pair(prof)
+        emit(args, data, lambda: print(f"paired; token in {data['token_file']}"))
+        return EXIT_OK
+    if not args.code:
+        raise TvError("Android wireless debugging needs the 6-digit code: tvctl pair IP:PORT CODE")
     host, _, port = args.address.partition(":")
     print(adb_pair(host, port or 0, args.code))
     return EXIT_OK
@@ -2968,6 +3843,7 @@ debloat = true
 # launcher = "projectivy"      # catalog id, or "stock"
 # screensaver = "aerialviews"  # catalog id with a `dream`
 # animation_scale = 0.5
+# dns = "hagezi-light"         # ad / tracker filter: hagezi-light | controld-ads | adguard | off (tvctl: DNS_FILTERS)
 
 [keys]
 """
@@ -2985,7 +3861,7 @@ udn = "{udn}"
 model = "{model}"
 presets = {presets}
 {dial_line}
-"""
+{extra}"""
 
 
 def init_network_tv(name, host, ident, force=False):
@@ -3005,7 +3881,10 @@ def init_network_tv(name, host, ident, force=False):
         caps="; ".join(CAP_TEXT[c] for c in PLATFORMS[plat]["caps"] if c in CAP_TEXT),
         host=host, port=PLATFORMS[plat]["port"], platform=plat, udn=ident.get("udn") or "",
         model=model.replace('"', "'"), presets=json.dumps(presets),
-        dial_line=f'dial_url = "{ident["dial_url"]}"' if ident.get("dial_url") else ""))
+        dial_line=f'dial_url = "{ident["dial_url"]}"' if ident.get("dial_url") else "",
+        extra="" if plat != "tizen" else '\n[home]\n# Override Home (tvctl install <tv> override-home): apps in the dock, in order '
+              '(samsung-home/js/apps.js)\n# dock = ["tizentube", "netflix", "prime", "tvplus", "livetv", "browser"]\n'
+              '# saver_minutes = 5\n'))
     prof = load_profile(name)
     dossier = discover_network(prof)
     network_guide(prof, rebuild=True)
@@ -3099,9 +3978,10 @@ def main():
     p.add_argument("--cidr", action="append", help="network to scan, e.g. 192.168.1.0/24 (repeatable)")
     p.add_argument("--all", action="store_true", help="also list devices that are not TVs")
     p.add_argument("--update", action="store_true", help="update profiles of known TVs that got a new IP")
-    p = add("pair", cmd_pair, "pair with a TV's wireless debugging (Android 11+)", profile=False)
-    p.add_argument("address", help="IP:PORT shown under 'Pair device with pairing code' on the TV")
-    p.add_argument("code", help="6-digit pairing code shown on the TV")
+    p = add("pair", cmd_pair, "pair: Android wireless debugging (IP:PORT CODE) or a Samsung TV's remote (profile)",
+            profile=False)
+    p.add_argument("address", help="IP:PORT shown under 'Pair device with pairing code', or a Samsung TV's profile")
+    p.add_argument("code", nargs="?", help="6-digit pairing code shown on the Android TV")
     p = add("init", cmd_init, "connect a new TV and write its profile", profile=False)
     p.add_argument("name")
     p.add_argument("--host", required=True)
@@ -3144,11 +4024,15 @@ def main():
     p.add_argument("--reboot", action="store_true", help="reboot first and check the TV boots into the profile")
     add("snapshot", cmd_snapshot, "save the current package state")
     add("discover", cmd_discover, "read everything about the TV into state/<tv>/dossier.json")
-    p = add("dial", cmd_dial, "list / launch / stop apps over the network (DIAL; Roku: channels)")
+    p = add("dial", cmd_dial, "list / launch / stop apps over the network (DIAL; Roku channels; Samsung apps)")
     p.add_argument("action", nargs="?", default="list", choices=["list", "launch", "stop"])
     p.add_argument("app", nargs="?")
     p = add("key", cmd_key, "send remote keys: up down left right ok back home menu volup voldown mute power …")
-    p.add_argument("keys", nargs="+")
+    p.add_argument("keys", nargs="+", help="key names; NAME*N repeats, e.g. down*3")
+    p.add_argument("--hold", type=float, default=0, help="Samsung: hold the key this many seconds")
+    p = add("type", cmd_type, "type into the focused text field (Android or paired Samsung TVs)")
+    p.add_argument("text")
+    p.add_argument("--replace", action="store_true", help="Android: replace up to 200 characters in the active text field")
     p = sub.add_parser("guide", help="preparation guide for this TV (walkthrough)")
     gsub = p.add_subparsers(dest="guide_cmd", required=True)
     for gname, ghelp in (("show", "show the guide (built from presets if missing)"), ("set", "store a guide from JSON"),
@@ -3164,8 +4048,10 @@ def main():
             gp.add_argument("file", help="guide JSON file, - for stdin (schema: prompts/prepare-tv.md)")
         else:
             gp.add_argument("step")
-    p = add("screenshot", cmd_screenshot, "save a PNG of what the TV shows right now")
-    p.add_argument("--out", help="file to write (default state/<tv>/screens/<time>.png)")
+    p = add("screenshot", cmd_screenshot, "save what the TV shows now (PNG; TVs without ADB: phone camera JPEG)")
+    p.add_argument("--out", help="file to write (default state/<tv>/screens/<time>.png|jpg)")
+    p.add_argument("--settle", type=float, default=1.5,
+                   help="phone camera: wait for a picture taken this many seconds from now (menus animate)")
     p = add("ask", cmd_ask, "ask the owner in the dashboard and wait for the answer", profile=False)
     p.add_argument("--title", required=True)
     p.add_argument("--body")
@@ -3198,6 +4084,35 @@ def main():
     p.add_argument("--port", type=int, default=UI_PORT)
     p.add_argument("--no-open", action="store_true", help="don't open the browser")
 
+    p = sub.add_parser("tizen", help="Samsung Developer Mode: tools, certificate and own apps (TizenTube, home screen)")
+    tsub = p.add_subparsers(dest="tizen_cmd", required=True)
+    for name, help_ in (("status", "what is set up for installing own apps"),
+                        ("setup", "do the missing steps: SDK tools, certificate tool, Samsung certificate")):
+        tp = tsub.add_parser(name, help=help_)
+        tp.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+        tp.add_argument("profile")
+        tp.set_defaults(fn=cmd_tizen)
+        if name == "setup":
+            tp.add_argument("--accept-license", action="store_true",
+                            help="the owner read and accepts Samsung's Tizen SDK licence")
+            tp.add_argument("--country", help="2-letter country code for the Samsung certificate")
+
+    p = sub.add_parser("kodi", help="Kodi Rows: movies, live TV and radio on the home screen")
+    ksub = p.add_subparsers(dest="kodi_cmd", required=True)
+    for name, help_ in (("status", "last refresh and the first titles of each row"),
+                        ("push", "send [[kodi.rows]] to the TV and refresh"), ("refresh", "refresh the rows now"),
+                        ("play", "open a configured TV channel or radio station in Kodi"),
+                        ("browse", "list a Kodi folder (find paths for [[kodi.rows]])")):
+        kp = ksub.add_parser(name, help=help_)
+        kp.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+        kp.add_argument("profile")
+        kp.set_defaults(fn=cmd_kodi)
+        if name == "browse":
+            kp.add_argument("path", nargs="?", default="plugin://plugin.video.umbrella/")
+        if name == "play":
+            kp.add_argument("row", help="TV or radio row id from the profile")
+            kp.add_argument("channel", help="channel id within the row")
+
     p = sub.add_parser("keys", help="remote button remapping")
     ksub = p.add_subparsers(dest="keys_cmd", required=True)
     for name, help_ in (("capture", "show scan codes of pressed buttons"), ("learn", "interactive remap"),
@@ -3219,6 +4134,12 @@ def main():
     args = ap.parse_args()
     try:
         sys.exit(args.fn(args))
+    except OwnerStep as e:
+        if args.json:
+            print(json.dumps({"waiting": str(e)}))
+        else:
+            print(f"waiting on the owner: {e}", file=sys.stderr)
+        sys.exit(EXIT_USER)
     except TvError as e:
         if args.json:
             print(json.dumps({"error": str(e)}))

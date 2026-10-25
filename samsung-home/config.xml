@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Override Home – the tv-override home screen for Samsung Tizen TVs. Installed by `tvctl install <tv> override-home`
+  in Developer Mode, signed with the owner's Samsung certificate. Public-level privileges only. It can't replace
+  Samsung's Home button; the TV starts in it with Start with Smart Hub Home off + Autorun Last App on.
+-->
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://tv-override.local/home" version="1.0.0" viewmodes="maximized">
+    <tizen:application id="TvOvrHome1.Home" package="TvOvrHome1" required_version="3.0"/>
+    <name>Override Home</name>
+    <description>Home screen with your apps, a clock and a screensaver.</description>
+    <content src="index.html"/>
+    <icon src="icon.png"/>
+    <feature name="http://tizen.org/feature/screen.size.all"/>
+    <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
+    <tizen:privilege name="http://tizen.org/privilege/application.info"/>
+    <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+    <tizen:profile name="tv-samsung"/>
+    <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable"
+                   encryption="disable" install-location="auto" hwkey-event="enable"/>
+</widget>

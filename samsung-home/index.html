@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1920, user-scalable=no">
+  <title>Override Home</title>
+  <link rel="stylesheet" href="css/home.css">
+</head>
+<body>
+  <div class="bg" aria-hidden="true"><div class="glow g1"></div><div class="glow g2"></div><div class="grid"></div></div>
+  <main id="home">
+    <header class="top">
+      <div class="brand"><span class="mark">▌</span>tv-override <span class="dim">//</span> <span id="tv-name"></span></div>
+      <div class="status" id="status"></div>
+    </header>
+    <section class="clock">
+      <div class="time" id="time">--:--</div>
+      <div class="date" id="date"></div>
+    </section>
+    <section class="dock-wrap">
+      <div class="prompt" id="prompt"><span class="caret">&gt;</span> <span id="prompt-text"></span><span class="cursor">_</span></div>
+      <div class="dock" id="dock" role="listbox" aria-label="Apps"></div>
+    </section>
+  </main>
+  <div class="saver" id="saver" hidden><div class="saver-clock" id="saver-clock"></div></div>
+  <div class="toast" id="toast" hidden></div>
+  <script src="js/apps.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/home.js"></script>
+</body>
+</html>

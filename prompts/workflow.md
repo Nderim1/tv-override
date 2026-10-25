@@ -38,6 +38,23 @@ when you parse output. tvctl exit code 2 means the owner has to do something on 
    buttons, an HDMI input and (if `live_tv.tuner_inputs` is not empty) a live channel opened from the launcher.
 10. **Wrap up**: summarise what changed, how much RAM was freed, and how to undo (`./tvctl restore`).
 
+## Samsung TV (Tizen)
+
+No ADB, so no debloat or button remapping; `init` recognises it (`platform = "tizen"`, preset `samsung`).
+1. **Remote**: `./tvctl pair <name>`, the owner chooses Allow on the TV. Then `key`, `type`, `dial`.
+2. **Privacy**: the owner walks the `samsung` prepare steps in the dashboard ([P]); offer the DNS filter step.
+3. **Own apps** (TizenTube = ad-free YouTube, Override Home = our home screen), only if the owner wants them:
+   - Ask first: it needs Developer Mode, Samsung's SDK tools (~330 MB, the owner accepts Samsung's licence) and
+     a free Samsung account sign-in in the browser. Explain that the Home button still opens Smart Hub.
+   - The owner does the `developer-mode` step (Host PC IP = this computer, restart the TV).
+   - `./tvctl --json tizen setup <name>`: exit 2 = waiting on the owner, the message says for what (licence:
+     the owner accepts in the dashboard [S] panel or you run `--accept-license` after they said yes in
+     `tvctl ask`; Samsung sign-in: a browser window opens on this computer). Re-run until it exits 0.
+   - `./tvctl install <name> tizentube` / `override-home` (dock: `[home].dock` in the profile, dashboard
+     [S] › dock). Then the owner does the `pin-home` and `start-screen` steps.
+   - A new Samsung TV of the same owner re-runs setup: the certificate is re-made for all their TVs' DUIDs.
+4. Kodi or SmartTube wanted → suggest an Android / Google TV stick on HDMI.
+
 ## Existing TV
 
 - Owner wants a change → edit the profile → `plan` → `apply` (only the steps that matter: `--only home`,
@@ -47,6 +64,21 @@ when you parse output. tvctl exit code 2 means the owner has to do something on 
 - App update → `prompts/verify-apk.md`, then `./tvctl install <name> <app> --force`.
 - Something broke → `prompts/diagnose.md`; undo one package with `./tvctl restore <name> <pkg>`, or a whole run with
   `./tvctl revert <name> <run-id> --keep` (dashboard: ⟲ REVERT in run history).
+
+## Kodi movies on the home screen
+
+Owner wants movies from Kodi (Umbrella, …) as a home screen row → `[[kodi.rows]]` in the profile (see
+`profiles/living-room-tcl.toml`), paths from `./tvctl kodi browse <name> [PATH]` (Kodi must be open on the TV;
+an add-on's changelog dialog blocks it – Back closes it). `apply --only home` installs Kodi Rows and pushes
+the rows; `./tvctl kodi status <name>` shows the first movies. Projectivy shows a new row only after the owner
+(or you, over ADB) switches it on: Settings › Edit channels › <row> › Visible; renaming a row can switch it off
+again. Channel rows sit below all categories until moved: on the home screen press LEFT on the row to reach
+its header, OK turns on reorder (↑↓), UP moves it, OK confirms. Hide categories (e.g. Inputs) in Edit
+categories › <category> › Visible. Projectivy's text box is a fixed 800 px × 3 lines: the app keeps its info
+line to one line so the plot gets two, and Projectivy settings › Appearance › Font › Sans-serif-condensed fits
+~75 characters a line instead of ~50 with the monospace font. Don't filter on stream
+availability or quality (that would query the add-on's scrapers); quality is the add-on's own setting. Adult
+content: `exclude_ratings` (US certificate from the add-on's metadata); unrated films are kept.
 
 ## Keep the repo learning
 

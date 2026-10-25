@@ -1,0 +1,100 @@
+{
+ "taken": "2026-10-25T11:48:56+01:00",
+ "tv": "living-room-tcl",
+ "props": {
+  "ro.product.brand": "TCL",
+  "ro.product.manufacturer": "TCL",
+  "ro.product.model": "Smart TV Pro",
+  "ro.product.name": "G10_4K_GB",
+  "ro.product.device": "G10",
+  "ro.build.fingerprint": "TCL/G10_4K_GB/G10:12/STT2.230203.001/AS16:user/release-keys",
+  "ro.build.version.release": "12",
+  "ro.build.version.sdk": "31",
+  "ro.build.version.security_patch": "2025-12-05",
+  "ro.build.version.incremental": "AS50",
+  "ro.board.platform": "rtd6748",
+  "ro.hardware": "rtd6748",
+  "ro.product.cpu.abi": "armeabi-v7a",
+  "ro.build.characteristics": "nosdcard,tv",
+  "persist.sys.locale": "en-GB",
+  "ro.product.locale": "en-US",
+  "persist.sys.timezone": "Europe/Tirane",
+  "ro.serialno": "380260560EC0ED05C"
+ },
+ "brand": "TCL",
+ "model": "Smart TV Pro",
+ "android": "12",
+ "security_patch": "2025-12-05",
+ "firmware": "AS50",
+ "soc": "rtd6748",
+ "cpu_cores": 4,
+ "ram_mb": 1765,
+ "storage_total_gb": 22.4,
+ "storage_free_gb": 17.3,
+ "display": "3840x2160",
+ "network": [
+  {
+   "iface": "eth0",
+   "ip": "192.168.1.101"
+  }
+ ],
+ "locale": "en-GB",
+ "timezone": "Europe/Tirane",
+ "play_store": true,
+ "play_store_version": "53.4.17-31",
+ "google_accounts": 1,
+ "remotes": [],
+ "live_tv": {
+  "tuner_inputs": [
+   "com.tcl.tvinput/.TunerInputService/HW2"
+  ],
+  "external_inputs": 4,
+  "channels": 0,
+  "player": "com.tcl.tv",
+  "player_enabled": true,
+  "protected_disabled": []
+ },
+ "home": "com.spocky.projengmenu/.ui.home.MainActivity",
+ "launchers": [
+  "com.android.tv.settings",
+  "com.spocky.projengmenu"
+ ],
+ "settings": {
+  "global:adb_enabled": "1",
+  "global:development_settings_enabled": "1",
+  "global:hdmi_control_enabled": "1",
+  "global:hdmi_control_auto_wakeup_enabled": "0",
+  "global:stay_on_while_plugged_in": "0",
+  "global:auto_time": "1",
+  "system:screen_off_timeout": "600000",
+  "secure:sleep_timeout": "1139000",
+  "secure:screensaver_components": "com.neilturner.aerialviews/.ui.screensaver.DreamActivity",
+  "global:window_animation_scale": "0.5"
+ },
+ "packages": {
+  "total": 143,
+  "classes": {
+   "core": 100,
+   "optional": 16,
+   "bloat": 21,
+   "user": 6
+  }
+ },
+ "presets": [
+  "core",
+  "google-tv",
+  "streaming-apps",
+  "tcl"
+ ],
+ "uptime_h": 122.9,
+ "notes": [
+  {
+   "level": "warn",
+   "text": "Low RAM (1765 MB): a lighter launcher and debloat help a lot"
+  },
+  {
+   "level": "info",
+   "text": "Has a TV tuner; 0 channel(s) scanned"
+  }
+ ]
+}

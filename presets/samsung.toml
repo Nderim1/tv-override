@@ -1,0 +1,98 @@
+# Samsung smart TVs (Tizen). No ADB: tvctl recognises the TV, reads its info, opens / closes apps and, after a
+# one-time "Allow" on the TV, sends remote keys and types text (tvctl pair <tv>). Nothing built in can be
+# uninstalled or replaced; privacy comes from the settings below. In Developer Mode tvctl installs TizenTube and
+# Override Home (tvctl tizen setup, tvctl install). Menu paths follow a 2023 QLED on Tizen 8 (from
+# github.com/victaphu/glass-home-samsung-tv, docs/SAMSUNG-SETTINGS.md) and vary by year – the agent researches.
+# GU65TU6979UXZG (2020 TU6979): use its EU e-manual for older menus; Settings has General and direct
+# Terms & Privacy, not the newer General & Privacy / All Settings hierarchy. Model support and manuals:
+# https://www.samsung.com/ie/support/model/GU65TU6979UXZG/
+# https://downloadcenter.samsung.com/content/UM/202404/20240424193908343/KT2DVBEUT-2.4.0_EM_KANT_EU_ENG_240419.0.pdf
+
+[preset]
+name = "samsung"
+description = "Samsung Tizen smart TV (no Android)"
+
+[match]
+platform = "tizen"
+
+[[prepare]]
+id = "update"
+title = "Install software updates first"
+why = "Updates fix bugs and can reset privacy choices – update first, then go through the rest. Big OS upgrades (e.g. to One UI Tizen) can't be undone."
+path = ["Settings", "All Settings", "Support", "Software Update"]
+how = "Choose Update Now and install anything found."
+required = false
+
+[[prepare]]
+id = "viewing-info"
+# TU6979: Settings > Terms & Privacy (manual p24); individual ACR/ad-consent names need screen confirmation.
+title = "Turn off content recognition (Viewing Information Services)"
+why = "It identifies what is on screen – HDMI inputs included – to build an ad profile."
+path = ["Home", "Left menu", "Privacy Choices", "Terms & Conditions, Privacy Policy"]
+how = "Untick 'Viewing Information Services', move down to OK. Leave 'I agree to all' unticked. Undo: tick it again."
+required = true
+
+[[prepare]]
+id = "ads"
+title = "Turn off interest-based ads and reset the ad ID"
+why = "Stops personalised ads; the reset gives the TV a fresh advertising ID (harmless, nothing depends on the old one)."
+path = ["Privacy Choices", "Terms & Conditions, Privacy Policy", "Interest-Based Advertisements"]
+how = "Untick 'Interest-Based Advertisements'. Then Settings › All Settings › General & Privacy › Terms & Privacy › Reset PSID › Reset."
+required = false
+
+[[prepare]]
+id = "promotions"
+title = "Stop promotional pop-ups and preview sound"
+why = "Samsung shows promotions as notifications, and Home-screen previews autoplay with sound."
+path = ["Settings", "Notification", "gear icon"]
+how = "Untick 'Samsung Promotion', OK. For preview sound: Home › For You › bottom › Media Options › Autoplay Sound."
+required = false
+
+[[prepare]]
+id = "developer-mode"
+title = "Optional: Developer Mode, to install TizenTube and Override Home"
+why = "Samsung only lets you install your own apps in Developer Mode, from one computer: this one. Nothing else changes on the TV."
+path = ["Home", "Apps", "App Settings", "type 1 2 3 4 5"]
+how = "Switch Developer mode On, enter this computer's IP address as Host PC IP (the control center shows it under [S] own apps), OK, then hold the remote's power button until the TV restarts. Then press SET UP under [S] own apps."
+required = false
+
+[[prepare]]
+id = "pin-home"
+title = "Optional: put Override Home first on the Home row"
+why = "If you ever land on Samsung's Home screen, Override Home is one press away."
+path = ["Home", "Apps", "App Settings", "Override Home", "Add to Home"]
+how = "After installing it: choose Add to Home, move it to the front with Left, then OK."
+required = false
+
+[[prepare]]
+id = "start-screen"
+# TU6979: Settings > General > Smart Features; last-app startup depends on model/app, so never promise it.
+title = "Start on the last app (Override Home), not Smart Hub"
+why = "The Home button always opens Smart Hub (no app can replace it), but the TV can start on the last app you used: open Override Home before switching off and the TV starts there."
+path = ["Settings", "All Settings", "General & Privacy", "Start Screen Options"]
+how = "Turn 'Start with Smart Hub Home' off and 'Autorun Last App' on (Tizen 9 / One UI: under Advanced Features). Careful: Factory Data Reset is the item just below."
+required = false
+
+[[prepare]]
+id = "power-on-mobile"
+# TU6979: Settings > General > Network > Expert Settings > Power On with Mobile.
+title = "Network standby (Power On with Mobile)"
+why = "Lets phones and this app reach the TV in standby (casting, opening apps)."
+path = ["Settings", "All Settings", "Connection", "Network", "Expert Settings", "Power On with Mobile"]
+how = "Turn it on. Uses a little more power in standby."
+required = false
+
+[[prepare]]
+id = "dns-filter"
+title = "Optional: DNS ad / tracker filter"
+why = "Blocks Samsung's ad servers, content-recognition hosts and log uploads for every app. Free, no account: Control D's HaGeZi Light list; tested to keep firmware updates, the app store, Samsung TV Plus, YouTube, Netflix, Prime Video and Disney+ working."
+path = ["Settings", "All Settings", "Connection", "Network", "Network Status", "IP Settings", "DNS Setting"]
+how = "Choose 'Enter manually', DNS Server 76.76.2.37, Done, OK. Leave the IP setting automatic. Samsung has one DNS field: if the TV loses internet while phones don't, set 'Get automatically' first. Use the on-screen keypad (remote digits may not fill the boxes). Undo: DNS Setting › Get automatically."
+required = false
+
+[[prepare]]
+id = "stick"
+title = "Optional: add an Android / Google TV stick for the full workflow"
+why = "This TV can't be debloated or get Kodi / SmartTube / a new launcher. A Google TV Streamer, Chromecast with Google TV or Fire TV Stick on HDMI gets everything."
+how = "Plug it into an HDMI port, finish its setup, turn on Developer options › USB debugging, then + ADD TV in the control center."
+required = false

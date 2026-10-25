@@ -1,0 +1,148 @@
+{
+ "tv": "living-room-tcl",
+ "source": "built-in",
+ "created": "2026-10-25T11:48:57+01:00",
+ "summary": "Generic preparation from the presets. Ask the agent to research this exact model for model-specific menus.",
+ "steps": [
+  {
+   "id": "adb",
+   "title": "Developer options and USB debugging",
+   "why": "Lets this app talk to the TV.",
+   "path": [
+    "Settings",
+    "System",
+    "About",
+    "Build (click 7\u00d7)",
+    "Developer options",
+    "USB debugging"
+   ],
+   "how": "Already done: the app is connected.",
+   "check": {
+    "type": "adb"
+   },
+   "required": true,
+   "status": "todo"
+  },
+  {
+   "id": "update",
+   "title": "Install system updates first",
+   "why": "Updates can switch removed apps back on. Update before we set things up, not after.",
+   "path": [
+    "Settings",
+    "System",
+    "About",
+    "System update"
+   ],
+   "how": "Install any update, let the TV restart, then come back here.",
+   "required": false,
+   "from": "google-tv",
+   "status": "todo"
+  },
+  {
+   "id": "account",
+   "title": "Sign in to a Google account",
+   "why": "Needed to install apps from the Play Store (Projectivy, Kodi, Aerial Views\u2026).",
+   "path": [
+    "Settings",
+    "Accounts & sign-in"
+   ],
+   "how": "Sign in with the owner's Google account. The app never sees the password.",
+   "check": {
+    "type": "accounts",
+    "min": 1
+   },
+   "required": true,
+   "from": "google-tv",
+   "status": "todo"
+  },
+  {
+   "id": "privacy",
+   "title": "Turn off usage reports and ad personalisation",
+   "why": "Stops Google collecting usage data and personalising ads on this TV.",
+   "path": [
+    "Settings",
+    "Privacy",
+    "Usage & diagnostics"
+   ],
+   "how": "Switch Usage & diagnostics off. Then Settings \u203a Privacy \u203a Ads: delete the advertising ID or turn off personalisation.",
+   "required": false,
+   "from": "google-tv",
+   "status": "todo"
+  },
+  {
+   "id": "cec",
+   "title": "HDMI-CEC: one remote for connected devices",
+   "why": "Lets the TV remote control a soundbar, console or set-top box connected over HDMI.",
+   "path": [
+    "Settings",
+    "Channels & inputs",
+    "Inputs",
+    "HDMI control"
+   ],
+   "how": "Turn it on if something is connected over HDMI; leave it off otherwise.",
+   "check": {
+    "type": "setting",
+    "ns": "global",
+    "key": "hdmi_control_enabled",
+    "equals": "1"
+   },
+   "auto": {
+    "ns": "global",
+    "key": "hdmi_control_enabled",
+    "value": "1"
+   },
+   "required": false,
+   "from": "google-tv",
+   "status": "todo"
+  },
+  {
+   "id": "channel-scan",
+   "title": "Scan antenna / cable channels (free channels only)",
+   "why": "Only if you watch antenna or cable TV on this set. Scanning free channels only keeps paywalled channels out.",
+   "path": [
+    "TV app (red TV tile)",
+    "Settings",
+    "Channel",
+    "Channel scan"
+   ],
+   "how": "Open the TV app, press the Settings (gear) button, Channel \u203a Channel scan \u203a Antenna or Cable. If there is a 'Scrambled channels' / 'Free only' option, choose free only. Start the scan. Follow the live screen if the menus look different.",
+   "check": {
+    "type": "channels",
+    "min": 1
+   },
+   "required": false,
+   "from": "tcl",
+   "status": "todo"
+  },
+  {
+   "id": "motion",
+   "title": "Picture: turn off motion smoothing",
+   "why": "Motion smoothing (MEMC) makes films look like soap operas and adds input lag.",
+   "path": [
+    "Settings",
+    "Display & Sound",
+    "Picture",
+    "Motion clarity"
+   ],
+   "how": "Set motion smoothing / MEMC off and use the Movie picture mode for films. Leave it on only if the owner likes it.",
+   "required": false,
+   "from": "tcl",
+   "status": "todo"
+  },
+  {
+   "id": "network-standby",
+   "title": "Network standby (if available)",
+   "why": "Keeps the network on in standby so this app (and casting) can reach the TV without a power cycle.",
+   "path": [
+    "Settings",
+    "System",
+    "Power and energy",
+    "Network standby"
+   ],
+   "how": "Turn it on if the menu exists on this model. It uses a little more power in standby.",
+   "required": false,
+   "from": "tcl",
+   "status": "todo"
+  }
+ ]
+}

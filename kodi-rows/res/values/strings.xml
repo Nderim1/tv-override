@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Kodi Rows</string>
+    <string name="a11y_label">Kodi Rows descriptions</string>
+    <string name="a11y_description">Shows the whole plot of the movie focused on the home screen and scrolls it slowly. Reads only which card the home screen has focused and where its description is.</string>
+</resources>

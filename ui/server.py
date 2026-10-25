@@ -14,11 +14,12 @@ import subprocess
 import threading
 import time
 import traceback
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+from phonecam import PhoneCam
 
 UI_DIR = Path(__file__).resolve().parent
 STATIC = UI_DIR / "static"
@@ -293,6 +294,8 @@ class App:
         self.tv, self.token = tv, token
         self.bus = Bus()
         self.desk = Desk(tv.STATE_DIR / "agent.json", self.bus)
+        self.cam = PhoneCam(tv, self.bus)
+        self.tizen_jobs = {}  # tv name -> running Samsung setup / install
         self.jobs = {}  # tv name -> Job
         self.captures = set()  # tv names currently listening for remote buttons
         self.screens = {}  # (tv, width) -> (time, bytes, content type)
@@ -323,7 +326,7 @@ class App:
         plat = t.get("platform", "adb")
         return {"name": name, "host": t["host"], "port": t.get("port", 5555), "model": t.get("model", ""),
                 "platform": plat, "platform_label": self.tv.PLATFORMS.get(plat, {}).get("label", plat),
-                "caps": self.tv.PLATFORMS.get(plat, {}).get("caps", []),
+                "caps": self.tv.platform_caps(prof) if plat == "tizen" else self.tv.PLATFORMS.get(plat, {}).get("caps", []),
                 "presets": t.get("presets", []), "launcher": prof["home"].get("launcher"),
                 "runs": len(runs), "last_run": last and {k: last.get(k) for k in
                                                         ("id", "mode", "outcome", "finished", "source")},
@@ -417,6 +420,55 @@ class App:
         self.bus.publish({"type": "prepare", "tv": name, "what": "guide"})
         return item
 
+    # ---- Samsung: tools, certificate and own apps (long steps run in the background, progress over SSE)
+
+    def tizen_job(self, name, op, body):
+        prof = self.tv.load_profile(name)
+        if self.tv.platform_of(prof) != "tizen":
+            raise self.tv.TvError("only for Samsung TVs")
+        with self.lock:
+            if self.tizen_jobs.get(name):
+                raise self.tv.TvError(f"{self.tizen_jobs[name]} is still running")
+            self.tizen_jobs[name] = op
+        publish = lambda **e: self.bus.publish({"type": "tizen", "tv": name, "op": op, **e})
+
+        def target():
+            log = lambda line: publish(state="running", line=line)
+            try:
+                if op == "setup":
+                    result = self.tv.tizen_setup(prof, log, accept_license=bool(body.get("accept_license")),
+                                                 country=(str(body.get("country") or "").upper()[:2] or None))
+                elif op == "install":
+                    result = self.tv.tizen_install(prof, str(body.get("app")), log)
+                else:
+                    result = self.tv.tizen_uninstall(prof, str(body.get("app")), log)
+                publish(state="done", line="done", result=result)
+            except self.tv.OwnerStep as e:
+                publish(state="owner", line=str(e))
+            except Exception as e:  # TvError, tool failures, network
+                publish(state="error", line=str(e))
+            finally:
+                with self.lock:
+                    self.tizen_jobs.pop(name, None)
+        publish(state="running", line=f"{op} started")
+        threading.Thread(target=target, daemon=True).start()
+        return {"started": op}
+
+    def home_preview(self, name, rel):
+        """Override Home in the browser, with this TV's dock (preview mode: made-up apps)."""
+        prof = self.tv.load_profile(name)
+        src = (self.tv.ROOT / "samsung-home").resolve()
+        if rel == "js/config.js":
+            home = prof["home"]
+            cfg = {"tv": name, "dock": home.get("dock", self.tv.DOCK_DEFAULT),
+                   "saverMinutes": home.get("saver_minutes", 5), "hour12": bool(home.get("hour12", False))}
+            return f"window.OVERRIDE_HOME = {json.dumps(cfg)};\n".encode(), "text/javascript"
+        f = (src / rel).resolve()
+        if src not in f.parents or not f.is_file():
+            raise FileNotFoundError(rel)
+        return f.read_bytes(), {".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+                                ".png": "image/png"}.get(f.suffix, "application/octet-stream")
+
     # ---- live screen
 
     def screen(self, name, width):
@@ -429,8 +481,13 @@ class App:
             if cached and time.time() - cached[0] < 0.8:
                 return cached
             prof = self.tv.load_profile(name)
-            if self.tv.platform_of(prof) != "adb":
-                raise self.tv.TvError("no screenshots on this TV (not Android)")
+            if self.tv.platform_of(prof) != "adb":  # no screenshots: the phone camera's newest frame
+                frame = self.cam.latest(name)
+                if not frame:
+                    raise self.tv.TvError("no picture yet: start PHONE CAMERA and point the phone at the TV")
+                entry = (frame[0], frame[1], "image/jpeg", "phone")
+                self.screens[key] = entry
+                return entry
             dev = self.tv.Device(prof["tv"]["host"], prof["tv"].get("port", 5555))
             started = time.time()
             png = dev.screencap()
@@ -569,6 +626,15 @@ def make_handler(app):
                 if STATIC not in f.parents or not f.is_file():
                     return self._send(404, {"error": "not found"})
                 return self._send(200, f.read_bytes(), CONTENT_TYPES.get(f.suffix, "application/octet-stream"))
+            hm = re.fullmatch(r"/samsung-home/([a-z0-9-]+)/([a-z0-9/._-]+)", path)
+            if method == "GET" and hm and hm.group(1) in app.profiles() and ".." not in hm.group(2):
+                if self.headers.get("Host") not in allowed_hosts:
+                    return self._send(403, {"error": "forbidden host"})
+                try:
+                    data, ctype = app.home_preview(hm.group(1), hm.group(2))
+                except FileNotFoundError:
+                    return self._send(404, {"error": "not found"})
+                return self._send(200, data, ctype)
             if not path.startswith("/api/"):
                 return self._send(404, {"error": "not found"})
             if not self._authorized(query):
@@ -589,6 +655,7 @@ def make_handler(app):
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Capture-Ms", str(ms))
+                self.send_header("X-Age", str(round(time.time() - taken)))
                 self.send_header("X-Captured", time.strftime("%H:%M:%S", time.localtime(taken)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -642,8 +709,17 @@ def make_handler(app):
                     return app.prepare_view(name, build=query.get("build") != ["0"])
                 if name and sub == "/dial":
                     prof = tv.load_profile(name)
-                    apps = tv.roku_apps(prof) if tv.platform_of(prof) == "roku" else tv.dial_apps(prof)
-                    return {"apps": apps, "caps": tv.platform_caps(prof)}
+                    return {"apps": tv.net_apps(prof), "caps": tv.platform_caps(prof)}
+                if path == "/api/phonecam":
+                    return app.cam.status()
+                if name and sub == "/tizen":
+                    st = tv.tizen_status(tv.load_profile(name))
+                    st["job"] = app.tizen_jobs.get(name)
+                    st["dock_apps"] = tv.dock_apps()
+                    return st
+                if name and sub == "/tizen/licence":
+                    f = tv.SAMSUNG_DIR / "tizen-sdk-licence.txt"
+                    return {"text": f.read_text()[:200000] if f.exists() else None}
                 if name and sub == "/store":
                     return tv.store_view(app.ctx(name))
                 if path == "/api/catalog":
@@ -652,7 +728,9 @@ def make_handler(app):
                     cat = tv.load_catalog()
                     return {"steps": tv.STEPS, "recipes": tv.RECIPES,
                             "launchers": [{"id": i, "name": a["name"]} for i, a in cat.items() if a.get("home")],
-                            "screensavers": [{"id": i, "name": a["name"]} for i, a in cat.items() if a.get("dream")]}
+                            "screensavers": [{"id": i, "name": a["name"]} for i, a in cat.items() if a.get("dream")],
+                            "dns_filters": [{"id": i, "name": f["name"], "about": f["about"]}
+                                            for i, f in tv.DNS_FILTERS.items()]}
             if method == "POST":
                 body = self._body()
                 try:
@@ -731,7 +809,7 @@ def make_handler(app):
                     tv.set_tv_address(name, str(body.get("host", "")), int(body.get("port", 5555)))
                     return {"ok": True}
                 if name and sub == "/home":
-                    tv.set_home_settings(name, {k: body[k] for k in ("launcher", "screensaver", "animation_scale")
+                    tv.set_home_settings(name, {k: body[k] for k in ("launcher", "screensaver", "animation_scale", "dns")
                                                 if k in body})
                     return {"ok": True}
                 if name and sub == "/discover":
@@ -762,13 +840,33 @@ def make_handler(app):
                     return g
                 dm = re.fullmatch(r"/dial/([A-Za-z0-9+._-]{1,40})/(launch|stop)", sub or "")
                 if name and dm:
-                    prof = tv.load_profile(name)
-                    if tv.platform_of(prof) == "roku":
-                        req = urllib.request.Request(f"http://{prof['tv']['host']}:8060/launch/{dm.group(1)}", data=b"", method="POST")
-                        urllib.request.urlopen(req, timeout=5).read()
-                    else:
-                        tv.dial_control(prof, dm.group(1), dm.group(2))
+                    tv.net_app_control(tv.load_profile(name), dm.group(1), dm.group(2))
                     return {"ok": True}
+                if name and sub == "/pair-remote":  # Samsung: waits up to 45 s for Allow on the TV
+                    prof = tv.load_profile(name)
+                    if tv.platform_of(prof) != "tizen":
+                        raise tv.TvError("pairing the remote is for Samsung TVs")
+                    return tv.tizen_pair(prof)
+                if name and sub == "/type":
+                    text = str(body.get("text", ""))[:200]
+                    prof = tv.load_profile(name)
+                    if "type" not in tv.platform_caps(prof):
+                        raise tv.TvError("typing needs a paired Samsung TV")
+                    with tv.TizenRemote(prof, wait_for_allow=10) as rc:
+                        rc.type_text(text)
+                    return {"ok": True}
+                tm = re.fullmatch(r"/tizen/(setup|install|uninstall)", sub or "")
+                if name and tm:
+                    return app.tizen_job(name, tm.group(1), body)
+                if name and sub == "/tizen/dock":
+                    tv.set_dock(name, body.get("dock"))
+                    return {"ok": True}
+                if path == "/api/phonecam":
+                    if body.get("on"):
+                        if str(body.get("tv")) not in app.profiles():
+                            raise tv.TvError("no such TV")
+                        return app.cam.start(str(body["tv"]))
+                    return app.cam.stop()
                 if name and sub == "/key":
                     key = str(body.get("key", ""))
                     if not re.fullmatch(r"[a-z]{2,8}", key):

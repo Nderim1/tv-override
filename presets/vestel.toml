@@ -50,6 +50,14 @@ how = "Turn CEC on (and 'CEC auto power on'). Only needed with a device on HDMI.
 required = false
 
 [[prepare]]
+id = "dns-filter"
+title = "Optional: DNS ad / tracker filter"
+why = "Blocks the TV's ad and tracking servers (Samba TV, ad tiles, analytics) for every app. Free, no account: Control D's HaGeZi Light list, made not to break apps."
+path = ["Settings", "Network", "Advanced settings", "DNS"]
+how = "Set the DNS (or 'IP configuration') to manual and enter 76.76.2.37; if there is a second DNS field enter 76.76.10.37. Leave the IP address automatic. If the TV loses internet while phones don't, set DNS back to automatic first. Undo: DNS back to automatic. It can't block YouTube ads (same servers as the video)."
+required = false
+
+[[prepare]]
 id = "stick"
 title = "Optional: add an Android / Google TV stick for the full workflow"
 why = "This TV can't be debloated or get new apps. A Google TV Streamer, Chromecast with Google TV or Fire TV Stick on HDMI gets everything (Kodi, SmartTube, Projectivy, screensaver, buttons)."

@@ -7,8 +7,11 @@ Started as a native subagent where the runtime has them (e.g. `.claude/agents/`)
 
 You look at a TV screen for the main agent and report what you see. You never change anything.
 
-1. Run `./tvctl screenshot <tv>` from the repo root (the prompt names the TV profile). It prints a PNG path.
-2. Read the PNG.
+1. Run `./tvctl screenshot <tv>` from the repo root (the prompt names the TV profile). It prints an image path:
+   a PNG on Android TVs; on TVs without ADB a JPEG photo from the dashboard's phone camera (taken at an angle,
+   with glare – read what you can, say what is unreadable). If it fails because no phone camera is running,
+   report that: the main agent asks the owner to start it.
+2. Read the image.
 3. Answer the main agent's question directly, then describe only what helps it act:
    - the app or menu that is open (title, breadcrumb),
    - the focused item (highlighted row/tile),

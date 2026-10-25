@@ -1,0 +1,55 @@
+/* Override Home – 1920×1080 TV canvas. No web fonts (the TV may be offline): system monospace. */
+html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #040806; color: #d7ffe4;
+  font-family: "DejaVu Sans Mono", "Menlo", "Consolas", "Courier New", monospace; }
+* { box-sizing: border-box; }
+
+/* background: two slow glows over a faint grid */
+.bg { position: fixed; top: 0; right: 0; bottom: 0; left: 0; overflow: hidden; }
+.glow { position: absolute; width: 1400px; height: 1400px; border-radius: 50%; filter: blur(140px); opacity: .35; }
+.g1 { background: #0f6b3a; left: -420px; top: -520px; animation: drift1 70s ease-in-out infinite alternate; }
+.g2 { background: #0a4b5c; right: -520px; bottom: -640px; animation: drift2 90s ease-in-out infinite alternate; }
+@keyframes drift1 { to { transform: translate(380px, 260px); } }
+@keyframes drift2 { to { transform: translate(-340px, -220px); } }
+.grid { position: absolute; top: 0; right: 0; bottom: 0; left: 0; opacity: .08;
+  background-image: linear-gradient(#3ddc84 1px, transparent 1px), linear-gradient(90deg, #3ddc84 1px, transparent 1px);
+  background-size: 64px 64px; }
+
+main { position: relative; height: 100%; padding: 72px 112px; display: flex; flex-direction: column; }
+.top { display: flex; justify-content: space-between; align-items: center; font-size: 26px; letter-spacing: 2px;
+  text-transform: uppercase; color: #8fbfa0; }
+.mark { color: #3ddc84; margin-right: 6px; }
+.dim { color: #3e6a50; }
+.status { color: #3ddc84; }
+
+.clock { margin-top: 120px; }
+.time { font-size: 220px; line-height: 1; font-weight: 300; letter-spacing: -6px; color: #effff4;
+  text-shadow: 0 0 48px rgba(61, 220, 132, .35); }
+.date { margin-top: 18px; font-size: 40px; color: #9fd2b2; }
+
+.dock-wrap { margin-top: auto; }
+.prompt { font-size: 30px; color: #7fbf98; margin-bottom: 26px; }
+.caret { color: #3ddc84; }
+.cursor { color: #3ddc84; animation: blink 1.1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.dock { display: flex; }
+.dock .tile + .tile { margin-left: 30px; }  /* no flex gap before Chromium 84 */
+.tile { width: 236px; height: 196px; border: 2px solid rgba(61, 220, 132, .18); border-radius: 14px;
+  background: rgba(8, 22, 14, .72); display: flex; flex-direction: column; align-items: center; justify-content: center;
+  transition: transform .16s ease-out, border-color .16s, box-shadow .16s; }
+.tile .art { width: 112px; height: 112px; display: flex; align-items: center; justify-content: center;
+  font-size: 54px; font-weight: 700; color: #3ddc84; border-radius: 12px; background: rgba(61, 220, 132, .08); }
+.tile .art img { width: 112px; height: 112px; object-fit: contain; }
+.tile .name { margin-top: 16px; font-size: 24px; color: #a9d8bb; max-width: 210px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile.focus { transform: translateY(-14px) scale(1.07); border-color: #3ddc84; background: rgba(12, 40, 24, .9);
+  box-shadow: 0 0 0 4px rgba(61, 220, 132, .18), 0 0 46px rgba(61, 220, 132, .45); }
+.tile.focus .name { color: #effff4; }
+.empty { font-size: 30px; color: #7fbf98; padding: 40px 0; }
+
+/* screensaver: black, one dim clock that moves */
+.saver { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: #000; z-index: 10; }
+.saver-clock { position: absolute; font-size: 120px; color: rgba(61, 220, 132, .38); font-weight: 300; }
+
+.toast { position: fixed; right: 112px; bottom: 72px; padding: 18px 26px; font-size: 26px; border: 1px solid #3ddc84;
+  border-radius: 10px; background: rgba(4, 12, 8, .92); color: #d7ffe4; z-index: 20; }
+[hidden] { display: none !important; }

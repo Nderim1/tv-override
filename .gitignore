@@ -1,4 +1,5 @@
 remote-remap/build/
+kodi-rows/build/
 *.idsig
 __pycache__/
 .DS_Store
@@ -10,3 +11,12 @@ state/ui.log
 state/*/perf-latest.json
 state/agent.json
 state/*/screens/
+state/*/samsung-token
+state/*/phonecam/
+state/.phonecam/
+state/*/tizen-build/
+# Signing keys stay local (same key = app updates install over the old version)
+*.keystore
+*.jks
+*.pem
+*.p12

@@ -1,0 +1,184 @@
+{
+  "source": "agent",
+  "summary": "Samsung GU65TU6979UXZG (2020 TU6979, Tizen): exact-model EU e-manual paths. This generation uses Settings → General and direct Settings → Terms & Privacy, rather than newer All Settings / General & Privacy menus. Region-dependent consents and last-app behaviour are explicitly conditional; motion controls are omitted until confirmed on this TV.",
+  "sources": [
+    {
+      "url": "https://www.samsung.com/ie/support/model/GU65TU6979UXZG/",
+      "title": "Exact-model support page and EU English manual"
+    },
+    {
+      "url": "https://downloadcenter.samsung.com/content/UM/202404/20240424193908343/KT2DVBEUT-2.4.0_EM_KANT_EU_ENG_240419.0.pdf",
+      "title": "EU English e-manual, April 2024"
+    },
+    {
+      "url": "https://downloadcenter.samsung.com/content/UM/202401/20240110173723613/KT2DVBEUT-2.4.0_EM_KANT_EU_DEU_230626.0.pdf",
+      "title": "EU German e-manual, January 2024"
+    },
+    {
+      "url": "https://www.samsung.com/us/support/smart-tv-acr/",
+      "title": "Samsung explanation of optional viewing-information consent"
+    }
+  ],
+  "steps": [
+    {
+      "id": "update",
+      "title": "Check for a TV software update",
+      "why": "Updates can affect app compatibility and reset preferences; check before personalising settings.",
+      "path": [
+        "Settings",
+        "Support",
+        "Software Update",
+        "Update Now"
+      ],
+      "how": "Choose Update Now. If an update is installed, let the TV finish restarting before continuing.",
+      "source": "https://downloadcenter.samsung.com/content/UM/202401/20240110173723613/KT2DVBEUT-2.4.0_EM_KANT_EU_DEU_230626.0.pdf",
+      "required": false
+    },
+    {
+      "id": "viewing-info",
+      "title": "Review viewing-information consent",
+      "why": "Samsung viewing-information consent is optional and can allow analysis of watched content.",
+      "path": [
+        "Settings",
+        "Terms & Privacy"
+      ],
+      "how": "Review the available optional consents; withdraw Viewing Information Services if it is offered and you do not want viewing analysis. The TU6979 manual confirms this menu, but individual consent labels vary by region.",
+      "source": "https://downloadcenter.samsung.com/content/UM/202404/20240424193908343/KT2DVBEUT-2.4.0_EM_KANT_EU_ENG_240419.0.pdf",
+      "required": true
+    },
+    {
+      "id": "ads",
+      "title": "Review personalised-ad consent",
+      "why": "Withdrawing optional personalised-ad consent reduces use of your information for advertising.",
+      "path": [
+        "Settings",
+        "Terms & Privacy"
+      ],
+      "how": "If an Interest-Based Advertisements or personalised-ad consent is offered, deselect it and save. This model manual does not confirm the individual consent names; skip this step if no such option is shown.",
+      "source": "https://downloadcenter.samsung.com/content/UM/202404/20240424193908343/KT2DVBEUT-2.4.0_EM_KANT_EU_ENG_240419.0.pdf",
+      "required": false
+    },
+    {
+      "id": "hbbtv",
+      "title": "Optional: limit broadcaster interactive services",
+      "why": "Turning HbbTV off removes broadcaster interactive/red-button services as well as their data access.",
+      "path": [
+        "Settings",
+        "Broadcasting",
+        "Expert Settings",
+        "HbbTV Settings"
+      ],
+      "how": "If you do not use broadcaster interactive services, set HbbTV to Off. If you keep HbbTV, review Do Not Track and Private Browsing where offered; availability varies by region.",
+      "source": "https://downloadcenter.samsung.com/content/UM/202404/20240424193908343/KT2DVBEUT-2.4.0_EM_KANT_EU_ENG_240419.0.pdf",
+      "required": false
+    },
+    {
+      "id": "power-on-mobile",
+      "title": "Optional: allow network wake",
+      "why": "Power On with Mobile lets supported devices wake the TV over the network and uses some standby power.",
+      "path": [
+        "Settings",
+        "General",
+        "Network",
+        "Expert Settings",
+        "Power On with Mobile"
+      ],
+      "how": "Enable this if you want network wake. German label: Mit dem Mobilgerät einschalten.",
+      "source": "https://downloadcenter.samsung.com/content/UM/202401/20240110173723613/KT2DVBEUT-2.4.0_EM_KANT_EU_DEU_230626.0.pdf",
+      "required": false
+    },
+    {
+      "id": "cec",
+      "title": "Optional: HDMI device control with Anynet+",
+      "why": "HDMI-CEC lets the TV remote control compatible HDMI devices and can link their power behaviour.",
+      "path": [
+        "Settings",
+        "General",
+        "External Device Manager",
+        "Anynet+ (HDMI-CEC)"
+      ],
+      "how": "Enable Anynet+ if you want linked control of a compatible HDMI receiver, soundbar or player. Allow up to two minutes for attached devices to be detected.",
+      "source": "https://downloadcenter.samsung.com/content/UM/202401/20240110173723613/KT2DVBEUT-2.4.0_EM_KANT_EU_DEU_230626.0.pdf",
+      "required": false
+    },
+    {
+      "id": "developer-mode",
+      "title": "Developer Mode for TizenTube",
+      "why": "Samsung requires Developer Mode and this computer’s address for developer app installation.",
+      "path": [
+        "Home",
+        "Apps",
+        "App Settings",
+        "Enter 1 2 3 4 5"
+      ],
+      "how": "Set Developer Mode On and Host PC IP to the computer address shown under [S] own apps (currently 192.168.0.108); select OK. Fully restart the TV after changes: hold Power until it restarts, or switch off and disconnect power briefly if it only enters standby.",
+      "source": "https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html",
+      "required": false
+    },
+    {
+      "id": "tizentube-setup",
+      "title": "Set up and install TizenTube",
+      "why": "Samsung tools and a certificate for this TV are needed to sign and install the app.",
+      "path": [
+        "Control center",
+        "[S] own apps",
+        "SET UP"
+      ],
+      "how": "Review and accept Samsung’s SDK licence yourself if prompted, and sign in to your Samsung account in the browser when requested. When setup is ready, choose INSTALL on TizenTube.",
+      "source": "https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html",
+      "required": false
+    },
+    {
+      "id": "tizentube-playback",
+      "title": "Older-TV TizenTube playback fix, if needed",
+      "why": "Upstream documents playback errors on older TVs that can require a different Developer Mode host address after installation.",
+      "path": [
+        "Home",
+        "Apps",
+        "App Settings",
+        "Enter 1 2 3 4 5"
+      ],
+      "how": "After TizenTube is installed, if videos fail, leave Developer Mode On and change Host PC IP to 127.0.0.1, select OK and fully restart the TV. Test a video for at least two minutes; for a future installation temporarily restore the computer address shown in [S], then apply the playback setting again.",
+      "source": "https://github.com/reisxd/TizenTube/blob/main/docs/README.md",
+      "required": false
+    },
+    {
+      "id": "pin-home",
+      "title": "Optional: pin Override Home if installed",
+      "why": "This only applies if you separately choose to install Override Home.",
+      "path": [
+        "Home",
+        "Apps"
+      ],
+      "how": "If Override Home is installed, select it and choose Add to Home, then move it to the desired position. Skip this step for a TizenTube-only setup.",
+      "source": "https://downloadcenter.samsung.com/content/UM/202404/20240424193908343/KT2DVBEUT-2.4.0_EM_KANT_EU_ENG_240419.0.pdf",
+      "required": false
+    },
+    {
+      "id": "start-screen",
+      "title": "Optional: review Smart Hub and last-app startup",
+      "why": "The TU6979 generation uses Smart Features; last-app startup depends on the model and the app.",
+      "path": [
+        "Settings",
+        "General",
+        "Smart Features"
+      ],
+      "how": "If available, turn Autorun Smart Hub off and Autorun Last App on when you prefer resuming a supported app. Skip unavailable options; this does not guarantee every app will reopen or change what the Home button does.",
+      "source": "https://downloadcenter.samsung.com/content/UM/202401/20240110173723613/KT2DVBEUT-2.4.0_EM_KANT_EU_DEU_230626.0.pdf",
+      "required": false
+    },
+    {
+      "id": "channel-scan",
+      "title": "Optional: scan directly connected TV channels",
+      "why": "Only needed if antenna, cable or satellite is connected directly to the TV and channels are missing.",
+      "path": [
+        "Settings",
+        "Broadcasting",
+        "Auto Tuning"
+      ],
+      "how": "Choose Auto Tuning; some firmware shows a second Auto Tuning submenu. Choose the connected reception source and follow the prompts; skip this for an external HDMI receiver or if your channels already work.",
+      "source": "https://downloadcenter.samsung.com/content/UM/202401/20240110173723613/KT2DVBEUT-2.4.0_EM_KANT_EU_DEU_230626.0.pdf",
+      "required": false
+    }
+  ]
+}

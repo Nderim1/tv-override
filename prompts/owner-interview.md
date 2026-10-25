@@ -20,6 +20,7 @@ and offer the recommended answer. Before asking, run `./tvctl --json inventory <
 | A cleaner, faster home screen? | `[home].launcher = "projectivy"` (frees ~170 MB on Google TV) or `"stock"` |
 | Screensaver: photos, aerial videos, clock, none? | `[home].screensaver` = `aerialviews` / `backdrop` / `google-ambient` / `basic-colors` |
 | Snappier menus? | `[home].animation_scale = 0.5` |
+| Block ad and tracking servers for the whole TV? (free, no account; can't block YouTube ads) | `[home].dns = "hagezi-light"` (Android 9+); TVs without ADB: the `dns-filter` prepare step |
 | Remote buttons for apps you don't use (Netflix, YouTube, Prime…): what should they open instead? | `[keys]` via prompts/learn-keys.md; add `remote-remap` to install |
 
 ## Asking through the dashboard

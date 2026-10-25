@@ -18,6 +18,7 @@ runtime that can run shell commands (Codex, Claude Code, …), see "Agents" belo
 | `apps.toml` | App catalog: Play Store apps and verified APKs, with their roles (home, screensaver, accessibility) |
 | `apks/` | Verified APKs (sha256 pinned in `apps.toml`), e.g. SmartTube 32.56 |
 | `remote-remap/` | Our 16 KB button remapper app (config pushed by tvctl; `bash build.sh`, no Gradle) |
+| `kodi-rows/` | Home screen rows of Kodi movies, live TV and radio, click to play (`[[kodi.rows]]`) |
 | `state/<tv>/` | Baseline snapshot + history of every change (used by restore) |
 | `ui/` | The control center: `server.py` (stdlib HTTP + SSE) and `static/` (vanilla JS, no build) |
 | `prompts/` | Agent prompts: system prompt, owner interview, package classification, keys, diagnosis, APK checks |
@@ -76,13 +77,39 @@ The scan recognises the platform of every TV (UPnP/DIAL descriptions + port fing
 | `adb` | TCL / Sony / Philips Google TV, Fire TV, Android projectors | everything |
 | `vestel` | JVC, Hitachi, Telefunken, Finlux, Toshiba (Vestel OS + Vewd store) | launch/stop YouTube, Netflix, Prime Video (DIAL); remote keys if the TV opens port 4660; guided privacy walkthrough |
 | `roku` | Roku TVs | list/launch channels, remote keys (ECP, untested) |
-| `webos`, `tizen` | LG, Samsung | DIAL app launch, guided walkthrough |
+| `tizen` | Samsung | open/close installed apps, TV info; after a one-time Allow on the TV (`tvctl pair <tv>`): remote keys, hold, typing; guided privacy walkthrough |
+| `webos` | LG | DIAL app launch, guided walkthrough |
+
+### Samsung: TizenTube and our own home screen
+
+SmartTube and Projectivy are Android apps. On a Samsung TV the equivalents are **TizenTube** (ad-free YouTube with
+SponsorBlock, vendored in `apks/`, checksum-pinned) and **Override Home** (`samsung-home/`: your apps, clock,
+screensaver). Both install in Samsung's Developer Mode:
+
+```bash
+./tvctl tizen status samsung-tv     # what is missing
+./tvctl tizen setup samsung-tv      # SDK tools, Samsung's certificate tool, the TV's certificate (stops for the owner)
+./tvctl install samsung-tv tizentube
+./tvctl install samsung-tv override-home
+```
+
+The owner turns on Developer Mode (Host PC IP = this computer), accepts Samsung's SDK licence and signs in to a
+Samsung account once. Certificates live in `~/tizen-studio-data` and `~/.tv-override/samsung` (back up
+`author-backup.p12`: updates must be signed with it). Samsung's Home button can't be replaced: with *Autorun Last
+App* on and *Start with Smart Hub Home* off, the TV starts in Override Home. The dashboard has all of it under
+[S] own apps, with a preview of the home screen.
+
+None of these can take screenshots: the control center's **phone camera** ([00] live screen › START PHONE CAMERA)
+turns a phone on the same Wi-Fi into the camera, and `tvctl screenshot` returns its newest picture.
 
 ```bash
 ./tvctl init jvc-tv --host 10.165.138.127     # platform detected automatically
 ./tvctl dial jvc-tv                             # apps and whether they run
 ./tvctl dial jvc-tv launch YouTube
 ./tvctl key jvc-tv home                         # where the platform allows network keys
+./tvctl pair samsung-tv                         # Samsung: choose Allow on the TV once
+./tvctl key samsung-tv 'down*3' ok              # repeats; --hold 1.5 ok holds a key
+./tvctl type samsung-tv "76.76.2.37"            # into the TV's on-screen keyboard
 ```
 
 For the full workflow on such a TV, add an Android / Google TV stick on HDMI as its own profile.
@@ -96,9 +123,9 @@ A run is any combination of steps. Each step pulls in what it needs, so nothing 
 |---|---|---|
 | `apps` | install the profile's apps, remove unwanted ones | full, apps-only |
 | `debloat` | disable bloat/tracking (presets + your disable list) | full, cleanup |
-| `home` | switch to the chosen launcher (or back to `stock`) | full, home-screen |
+| `home` | switch to the chosen launcher (or back to `stock`); push `[[kodi.rows]]` | full, home-screen |
 | `screensaver` | set the chosen screensaver, installing it if needed | full |
-| `tweaks` | animation speed | full, cleanup |
+| `tweaks` | animation speed, DNS ad / tracker filter (`[home].dns`) | full, cleanup |
 | `buttons` | push the remote button map, installing Remote Remap if needed | full |
 
 ```bash
@@ -148,6 +175,24 @@ One APK for every TV. `tvctl` pushes the `[keys]` table to it over ADB; only the
 (the receiver requires `android.permission.DUMP`). On TCL, `tvctl apply` also grants the `APP_AUTO_START`
 app-op its accessibility service needs. Signing key: `remote-remap/remap.keystore` (keep it, so updates install
 over the old version).
+
+## Kodi Rows
+
+Home screen rows of movies from Kodi add-ons (e.g. Umbrella), as Android TV preview channels: Projectivy and
+the stock launcher show them, a poster opens Kodi and plays the movie through the add-on (its source picker).
+Each `[[kodi.rows]]` in the profile lists add-on folders (`tvctl kodi browse <tv> [PATH]` finds them), how many
+"Next page"s to follow, `sort = "year"` (newest first), `exclude_countries` / `exclude_languages` and
+`exclude_ratings` (US certificates like `"R"`, `"NC-17"`). The app reads them over Kodi's JSON-RPC (127.0.0.1:9090,
+on by default for apps on the same device), every hour while Kodi is running, never during playback. Each movie's
+text starts with its IMDb rating (IMDb's free daily `title.ratings.tsv.gz`, fetched once a day), genre and
+certificate. Posters are downloaded by the app and served from its cache (`content://com.nde.kodirows.posters/…`),
+because Projectivy won't download remote program art itself. `tvctl kodi status|push|refresh <tv>`. Projectivy: switch the new row on
+once in Settings › Edit channels › <row> › Visible. Signing key: `kodi-rows/kodirows.keystore`.
+
+Separate live TV and radio rows use `type = "live"` or `type = "radio"` and `[[kodi.rows.channels]]`
+entries with station names, logos and playback URLs. Gjirafa streams resolve on entry; Klan links renew
+during playback. These rows refresh independently of Kodi. See [Kodi Rows](kodi-rows/README.md) for the
+profile format and checked sources.
 
 ## Adding knowledge
 

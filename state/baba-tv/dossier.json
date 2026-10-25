@@ -1,0 +1,64 @@
+{
+ "taken": "2026-10-21T18:48:05+02:00",
+ "tv": "baba-tv",
+ "platform": "tizen",
+ "platform_label": "Samsung Tizen",
+ "brand": "Samsung",
+ "model": "GU65TU6979UXZG",
+ "name": "[TV] Samsung 6 Series (65)",
+ "network": [
+  {
+   "iface": "lan",
+   "ip": "192.168.0.109"
+  }
+ ],
+ "ports": [
+  8001,
+  8002
+ ],
+ "upnp": [
+  {
+   "friendly_name": "[TV] Samsung 6 Series (65)",
+   "manufacturer": "Samsung Electronics",
+   "model": "GU65TU6979UXZG",
+   "model_number": "1.0",
+   "description": "Samsung DTV RCR",
+   "udn": "uuid:c79a7030-5674-44f9-9751-8be92c5a71d5",
+   "type": "urn:dial-multiscreen-org:device:dialreceiver:1",
+   "dial_url": "http://192.168.0.109:8080/ws/app/"
+  }
+ ],
+ "dial_url": "http://192.168.0.109:8080/ws/app/",
+ "apps": [],
+ "capabilities": [
+  "tizen-apps",
+  "guide",
+  "pair"
+ ],
+ "samsung": null,
+ "capabilities_text": [
+  "list, open and close installed apps over the network",
+  "guided preparation walkthrough",
+  "remote keys and typing over the network, after choosing Allow once on the TV"
+ ],
+ "presets": [
+  "core",
+  "samsung",
+  "streaming-apps"
+ ],
+ "live_tv": {
+  "tuner_inputs": [],
+  "external_inputs": 0,
+  "channels": null
+ },
+ "notes": [
+  {
+   "level": "warn",
+   "text": "Not Android: no developer mode, so no debloat, app installs, launcher or screenshots. For the full workflow, add an Android / Google TV streaming stick on HDMI."
+  },
+  {
+   "level": "info",
+   "text": "Pair once (tvctl pair, or PAIR REMOTE in the control center) and choose Allow on the TV to send keys and open apps."
+  }
+ ]
+}

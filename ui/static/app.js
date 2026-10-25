@@ -14,6 +14,8 @@ const S = {
   keys: null, keysError: null, capture: { state: null, presses: [], until: 0 },
   prep: { data: null, loading: false, error: null, open: null, show: null },
   screen: { live: false, interval: 2000, timer: null, busy: false, url: null, info: '', error: null, auto: false },
+  cam: null,  // phone camera status (TVs without screenshots)
+  tz: null, tzLog: [],  // Samsung: own apps (Developer Mode) status and job log
 };
 
 /* ------------------------------------------------------------------ api */
@@ -104,6 +106,8 @@ function handleKeyEvent(ev) {
 
 function handleEvent(ev) {
   if (ev && ev.type === 'agent') return handleAgentEvent(ev);
+  if (ev && ev.type === 'phonecam') return handleCamEvent(ev);
+  if (ev && ev.type === 'tizen') return handleTizenEvent(ev);
   if (ev && (ev.type === 'keypress' || ev.type === 'keycapture')) return handleKeyEvent(ev);
   if (ev && ev.type === 'prepare') { if (ev.tv === S.selected) loadPrep(false); return; }
   if (!ev || !ev.tv) return;
@@ -287,6 +291,8 @@ async function selectTv(name) {
     renderAgent();
     loadPrep();
     loadDial();
+    loadCam();
+    if (S.detail.summary.platform === 'tizen') { S.tz = null; S.tzLog = []; loadTizen(); }
     return;
   }
   renderMain();
@@ -811,7 +817,7 @@ function renderPrep() {
     ['TV', [d.brand, d.model || d.name].filter(Boolean).filter((x, i, a) => !a.some((y, j) => j !== i && y.toLowerCase().includes(x.toLowerCase()))).join(' ') || '?', d.name || ''],
     ['Platform', d.platform_label || d.platform, 'no Android, no developer mode'],
     ['Network', (d.network || []).map((n) => n.ip).join(', '), `open ports ${(d.ports || []).join(', ') || '?'}`],
-    ['Apps (DIAL)', (d.apps || []).map((a) => a.name).join(', ') || 'none found', (d.apps || []).filter((a) => a.state === 'running').map((a) => a.name + ' running').join(', ')],
+    [d.platform === 'tizen' ? 'Apps' : d.platform === 'roku' ? 'Channels' : 'Apps (DIAL)', (d.apps || []).map((a) => a.name).join(', ') || 'none found', (d.apps || []).filter((a) => a.state === 'running').map((a) => a.name + ' running').join(', ')],
     ['Can do here', (d.capabilities_text || []).length + ' thing(s)', (d.capabilities_text || []).join(' · ')],
     ['UPnP', (d.upnp || []).map((u) => u.friendly_name).filter(Boolean).join(', ') || '–', (d.upnp || []).map((u) => u.description || u.manufacturer).filter(Boolean).join(' · ')],
     ['Read', ago(d.taken), (d.presets || []).join(', ')],
@@ -884,11 +890,15 @@ function renderMainNet() {
   $('#main').innerHTML = `
     <section class="panel" id="sec-head"></section>
     <section class="panel" id="sec-prep"></section>
+    <section class="panel" id="sec-screen"></section>
     <section class="panel" id="sec-dial"></section>
+    <section class="panel" id="sec-tizen" ${S.detail.summary.platform === 'tizen' ? '' : 'hidden'}></section>
     <section class="panel" id="sec-pad" hidden></section>
     <section id="sec-agent"></section>`;
   renderHeadNet();
+  renderTizen();
   renderPrep();
+  renderScreen();
   renderDial();
 }
 
@@ -897,15 +907,21 @@ function renderHeadNet() {
   if (!el) return;
   const sum = S.detail.summary, on = onlineOf(sum.name);
   const caps = (S.dial?.caps || sum.caps || []).filter((c) => c !== 'keys?');
-  const TEXT = { dial: 'start and stop YouTube / Netflix / Prime Video', 'roku-apps': 'list and launch channels', keys: 'remote keys over the network', guide: 'guided preparation' };
+  const TEXT = { dial: 'start and stop YouTube / Netflix / Prime Video', 'roku-apps': 'list and launch channels', keys: 'remote keys over the network', guide: 'guided preparation',
+    'tizen-apps': 'open and close installed apps', pair: 'remote keys after a one-time Allow on the TV', type: "typing into the TV's keyboard" };
   el.innerHTML = `<div class="tv-head"><div>
       <h1 class="tv-title"><span class="prompt">&gt;</span>${esc(sum.name)}</h1>
       <div class="tv-sub">${esc(sum.model)} · ${esc(sum.host)}</div>
       <div class="chips"><span class="online ${on ? 'on' : ''}">${on ? 'ONLINE' : 'OFFLINE'}</span>
         <span class="chip accent">${esc(sum.platform_label)}</span><span class="chip">no ADB</span></div></div></div>
-    <div class="alert" style="animation:none;margin-top:12px;padding:12px 14px">
+    ${sum.platform === 'tizen' ? `<div class="alert" style="animation:none;margin-top:12px;padding:12px 14px">
+      <b class="st st-manual">⚠ Samsung, not Android.</b> Samsung's own apps can't be removed and its Home button can't be replaced, and there are no screenshots
+      (use the phone camera in [00]) or button remapping. <b>What works:</b> ${caps.map((c) => esc(TEXT[c] || c)).join(' · ')} · in Developer Mode: TizenTube (ad-free YouTube)
+      and our own home screen the TV starts in, see [S].
+      <div class="hint" style="margin-top:6px">For Kodi, SmartTube and the full workflow, add an Android / Google TV stick on HDMI with + ADD TV.</div></div>` : ''}
+    <div class="alert" style="animation:none;margin-top:12px;padding:12px 14px" ${sum.platform === 'tizen' ? 'hidden' : ''}>
       <b class="st st-manual">⚠ Not an Android TV.</b> No developer mode exists on this TV, so debloating, installing apps, a new launcher,
-      screenshots and button remapping are not possible here. <b>What works:</b> ${caps.map((c) => esc(TEXT[c] || c)).join(' · ') || 'recognition only'}.
+      screenshots (use the phone camera in [00]) and button remapping are not possible here. <b>What works:</b> ${caps.map((c) => esc(TEXT[c] || c)).join(' · ') || 'recognition only'}.
       <div class="hint" style="margin-top:6px">For the full workflow, plug an Android / Google TV stick (Google TV Streamer, Chromecast with Google TV, Fire TV Stick)
       into HDMI and add it with + ADD TV. The TV stays the display and keeps its own live TV tuner.</div></div>`;
 }
@@ -928,14 +944,88 @@ function renderDial() {
       <div class="row" style="margin-top:8px"><button class="btn btn-sm btn-primary" data-action="dial-go" data-app="${esc(a.id)}" data-op="launch">▶ OPEN ON TV</button>
       ${a.state === 'running' ? `<button class="btn btn-sm" data-action="dial-go" data-app="${esc(a.id)}" data-op="stop">■ STOP</button>` : ''}</div></div>`).join('')}</div>`
     : '<div class="empty">The TV reports no DIAL apps.</div>')
-    + '<div class="hint" style="margin-top:8px">Uses DIAL, the protocol phones use to cast to the TV. Other apps can only be opened with the TV remote.</div>';
+    + (S.detail.summary.platform === 'tizen'
+      ? '<div class="hint" style="margin-top:8px">Uses the TV\'s own network API. Only the well-known apps are listed; others open with the TV remote.</div>'
+      : '<div class="hint" style="margin-top:8px">Uses DIAL, the protocol phones use to cast to the TV. Other apps can only be opened with the TV remote.</div>');
   const pad = $('#sec-pad');
   if (pad) {
-    pad.hidden = !(D.caps || []).includes('keys');
-    pad.innerHTML = `<div class="panel-head"><h2 class="panel-title"><b>[R]</b>remote</h2></div>
-      <div class="pad">${[['power', '⏻'], ['home', '⌂'], ['back', '↩'], ['menu', '☰'], ['up', '▲'], ['volup', 'VOL+'], ['left', '◀'], ['ok', 'OK'], ['right', '▶'], ['mute', 'MUTE'], ['down', '▼'], ['voldown', 'VOL−']]
-        .map(([k, l]) => `<button class="btn" data-action="key" data-key="${k}" aria-label="${k}">${l}</button>`).join('')}</div>`;
+    const caps = D.caps || [];
+    pad.hidden = !(caps.includes('keys') || caps.includes('pair'));
+    const head = '<div class="panel-head"><h2 class="panel-title"><b>[R]</b>remote</h2></div>';
+    pad.innerHTML = caps.includes('pair')
+      ? head + `<p class="hint">Pair once so this computer can send keys, open apps and type on the TV. Press PAIR, then choose <b>Allow</b> on the TV within 45 seconds.</p>
+        <button class="btn btn-primary" data-action="pair-remote" ${S.pairing ? 'disabled' : ''}>${S.pairing ? '<span class="spin">◌</span> CHOOSE ALLOW ON THE TV…' : 'PAIR REMOTE'}</button>`
+      : head + `<div class="pad">${[['power', '⏻'], ['home', '⌂'], ['back', '↩'], ['menu', '☰'], ['up', '▲'], ['volup', 'VOL+'], ['left', '◀'], ['ok', 'OK'], ['right', '▶'], ['mute', 'MUTE'], ['down', '▼'], ['voldown', 'VOL−']]
+        .map(([k, l]) => `<button class="btn" data-action="key" data-key="${k}" aria-label="${k}">${l}</button>`).join('')}</div>`
+        + (caps.includes('type') ? `<div class="row" style="margin-top:10px"><input class="search" id="type-text" maxlength="200" placeholder="text for the TV's on-screen keyboard…" aria-label="Text to type on the TV">
+          <button class="btn btn-sm" data-action="type-send">TYPE ON TV</button></div>` : '');
   }
+}
+
+/* ------------------------------------------------------------------ Samsung: own apps in Developer Mode */
+
+async function loadTizen() {
+  const tv = S.selected;
+  try { const st = await api(`/api/tv/${tv}/tizen`); if (tv === S.selected) S.tz = st; } catch (e) { S.tz = { error: e.message }; }
+  renderTizen();
+}
+
+function handleTizenEvent(ev) {
+  if (ev.tv !== S.selected) return;
+  S.tzLog.push({ state: ev.state, line: ev.line });
+  S.tzLog = S.tzLog.slice(-40);
+  if (S.tz) S.tz.job = ev.state === 'running' ? ev.op : null;
+  if (ev.state === 'owner' && /licen[cs]e/i.test(ev.line)) licenceModal();
+  if (ev.state === 'done' && ev.op !== 'setup') toast(ev.op === 'install' ? `installed ${ev.result?.name || ''}` : 'removed');
+  renderTizen();
+  if (ev.state !== 'running') loadTizen();
+}
+
+function renderTizen() {
+  const el = $('#sec-tizen');
+  if (!el || el.hidden) return;
+  const T = S.tz, busy = !!T?.job;
+  const head = `<div class="panel-head"><h2 class="panel-title"><b>[S]</b>own apps · developer mode</h2>
+    <span class="row">${explainBtn('How does installing TizenTube and our own home screen on a Samsung TV work, and what does the owner have to do?')}
+    <button class="btn btn-sm" data-action="tz-reload" ${busy ? 'disabled' : ''}>↻</button></span></div>`;
+  if (!T) { el.innerHTML = head + '<div class="empty"><span class="spin">◌</span> checking tools and certificate…</div>'; return; }
+  if (T.error) { el.innerHTML = head + `<div class="empty">${esc(T.error)}</div>`; return; }
+  const left = T.checks.filter((c) => !c.ok);
+  const checks = `<ol class="tz-checks">${T.checks.map((c) => `<li class="${c.ok ? 'ok' : ''}">
+      <span class="st ${c.ok ? 'st-done' : c.owner ? 'st-manual' : 'st-pending'}">${c.ok ? '✓' : c.owner ? '⚠' : '○'}</span>
+      <span><b>${esc(c.title)}</b>${c.ok ? '' : `<div class="hint">${esc(c.detail)}${c.owner ? ' · <b>you</b>' : ''}</div>`}</span></li>`).join('')}</ol>`;
+  const setup = T.ready ? '<span class="st st-done">✓ ready to install apps</span>'
+    : `<button class="btn btn-primary" data-action="tz-setup" ${busy ? 'disabled' : ''}>${busy && T.job === 'setup' ? '<span class="spin">◌</span> SETTING UP…' : '▶ SET UP'}</button>
+       <span class="hint">does every step it can; stops where you need to act (${left.filter((c) => c.owner).length} for you)</span>`;
+  const apps = Object.entries(T.apps).map(([id, a]) => `<div class="store-card ${a.installed ? 'is-installed' : ''}">
+      <b>${esc(a.name)}</b> <span class="hint">${esc(a.version || '')}</span>
+      <div class="store-status">${a.installed ? '<span class="st st-done">● installed</span>' : '<span class="st st-pending">○ not installed</span>'}</div>
+      <div class="hint" style="margin:6px 0">${esc(a.note)}</div>
+      <div class="row"><button class="btn btn-sm btn-primary" data-action="tz-install" data-app="${id}" ${!T.ready || busy ? 'disabled' : ''}>${a.installed ? '↻ REINSTALL' : '⤓ INSTALL'}</button>
+        ${a.installed ? `<button class="btn btn-sm" data-action="tz-uninstall" data-app="${id}" ${busy ? 'disabled' : ''}>REMOVE</button>` : ''}
+        ${id === 'override-home' ? `<a class="btn btn-sm" href="/samsung-home/${esc(S.selected)}/index.html" target="_blank" rel="noopener">PREVIEW</a>` : ''}</div></div>`).join('');
+  const dock = new Set(T.dock || []);
+  const dockEditor = `<details class="tz-dock"><summary>Home screen dock: ${(T.dock || []).length} app(s)</summary>
+      <div class="hint">Shown in this order on Override Home; apps the TV doesn't have are skipped. Reinstall Override Home to apply.</div>
+      <div class="tz-dock-list">${[...(T.dock || []).map((k) => T.dock_apps.find((a) => a.key === k)).filter(Boolean), ...T.dock_apps.filter((a) => !dock.has(a.key))]
+        .map((a) => `<label class="check"><input type="checkbox" data-dock="${esc(a.key)}" ${dock.has(a.key) ? 'checked' : ''}> ${esc(a.label)}</label>`).join('')}</div>
+      <button class="btn btn-sm" data-action="tz-dock-save">SAVE DOCK</button></details>`;
+  const log = S.tzLog.length ? `<div class="console tz-log">${S.tzLog.map((l) => `<div class="${l.state === 'error' ? 'error' : l.state === 'owner' ? 'warn' : ''}">${l.state === 'owner' ? '⚠ ' : l.state === 'error' ? '✗ ' : '› '}${esc(l.line)}</div>`).join('')}</div>` : '';
+  el.innerHTML = head + `<p class="hint">TizenTube (ad-free YouTube) and Override Home (our home screen) install in Samsung's Developer Mode, signed with a free
+      Samsung certificate for this TV. The TV then starts in Override Home (see the Start Screen step in [P]); the Home button still opens Smart Hub.</p>
+    ${checks}<div class="row" style="margin:10px 0">${setup}</div>${log}
+    <div class="store-grid" style="margin-top:12px">${apps}</div>${dockEditor}`;
+}
+
+async function licenceModal() {
+  let text = null;
+  try { text = (await api(`/api/tv/${S.selected}/tizen/licence`)).text; } catch { /* shown below */ }
+  modal(`<h2>Samsung Tizen SDK licence</h2>
+    <p class="hint">Samsung's command-line tools are needed to sign and install apps on the TV. Installing them means accepting Samsung's licence. Read it, then accept or cancel.</p>
+    <pre class="licence">${esc(text || 'The licence text could not be read.')}</pre>
+    <label class="check"><input type="checkbox" id="tz-country-on"> Country for the certificate (optional): <input class="search" id="tz-country" maxlength="2" style="width:60px" placeholder="AL"></label>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" data-action="modal-close">CANCEL</button>
+      <button class="btn btn-primary" data-action="tz-accept" ${text ? '' : 'disabled'}>I ACCEPT · INSTALL</button></div>`);
 }
 
 /* ------------------------------------------------------------------ live screen */
@@ -951,9 +1041,55 @@ function renderScreen() {
       <div class="screen-badge" id="screen-badge"></div>
       <div class="screen-msg" id="screen-msg"></div>
     </div>
-    <div class="hint" id="screen-info" style="margin-top:6px"></div>`;
+    <div class="hint" id="screen-info" style="margin-top:6px"></div>${camBox()}`;
   renderScreenControls();
   renderScreenStatus();
+  drawQr();
+}
+
+/* phone camera: a phone pointed at the TV replaces screenshots on TVs without ADB */
+function camBox() {
+  if (!isNet()) return '';
+  const C = S.cam || {};
+  if (!(C.running && C.tv === S.selected)) {
+    return `<div class="cam-box"><div><b>This TV can't take screenshots.</b> A phone on the same Wi-Fi can be the camera: start it, open the link on the phone,
+      accept the certificate warning (it is this computer's own certificate), tap START CAMERA and stand the phone facing the TV.
+      ${C.running ? `<div class="hint">The camera is feeding ${esc(C.tv)} now; starting here switches it to this TV.</div>` : ''}
+      <div class="row" style="margin-top:8px"><button class="btn btn-primary btn-sm" data-action="cam" data-on="1">START PHONE CAMERA</button></div></div></div>`;
+  }
+  return `<div class="cam-box"><div class="cam-qr" id="cam-qr" aria-label="QR code of the camera link"></div><div>
+    <div>Open this on the phone (or scan the code):</div><a class="cam-url" href="${esc(C.url)}" target="_blank" rel="noopener">${esc(C.url)}</a>
+    <div class="hint">${C.frames ? 'the phone is sending pictures' : 'waiting for the phone…'} · Safari: Show Details › visit this website ·
+      stops by itself after 20 minutes without pictures</div>
+    <div class="row" style="margin-top:8px"><button class="btn btn-sm" data-action="cam" data-on="0">■ STOP CAMERA</button></div></div></div>`;
+}
+
+function drawQr() {
+  const el = $('#cam-qr'), url = S.cam?.url;
+  if (!el || !url) return;
+  const draw = () => { const q = window.qrcode(0, 'M'); q.addData(url); q.make(); el.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); };
+  if (window.qrcode) { draw(); return; }
+  const tag = document.createElement('script');
+  tag.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+  tag.onload = () => { if ($('#cam-qr')) draw(); };
+  tag.onerror = () => { el.hidden = true; };
+  document.head.appendChild(tag);
+}
+
+async function loadCam() {
+  try { S.cam = await api('/api/phonecam'); } catch { S.cam = null; }
+  if (!isNet()) return;
+  renderScreen();
+  if (S.cam?.running && S.cam.tv === S.selected && S.cam.frames) setLive(true); else screenTick(true);
+}
+
+function handleCamEvent(ev) {
+  const was = S.cam;
+  S.cam = ev;
+  if (!isNet() || !$('#sec-screen')) return;
+  renderScreen();
+  if (ev.running && ev.tv === S.selected && ev.frames && !(was?.frames && was.tv === ev.tv) && !S.screen.live) setLive(true);
+  if (!ev.running && S.screen.live) setLive(false);
 }
 
 function renderScreenControls() {
@@ -972,16 +1108,16 @@ function renderScreenStatus() {
   const Sc = S.screen;
   if ($('#screen-badge')) $('#screen-badge').innerHTML = Sc.live ? '<span class="busy">●</span> LIVE' : Sc.url ? 'STILL' : '';
   if ($('#screen-msg')) $('#screen-msg').textContent = Sc.error ? Sc.error : !Sc.url ? (Sc.busy ? 'capturing…' : 'no picture yet') : '';
-  if ($('#screen-info')) $('#screen-info').textContent = Sc.info + (Sc.url ? ' · video apps can show black (copy protection)' : '');
+  if ($('#screen-info')) $('#screen-info').textContent = Sc.info + (Sc.url && !isNet() ? ' · video apps can show black (copy protection)' : '');
 }
 
 async function screenTick(once = false) {
   const Sc = S.screen, tv = S.selected;
   clearTimeout(Sc.timer);
-  if (!tv || !$('#screen-img') || isNet()) return;
+  if (!tv || !$('#screen-img')) return;
   const again = () => { if (Sc.live && !once) Sc.timer = setTimeout(() => screenTick(), Sc.interval); };
   if (document.hidden || Sc.busy) { again(); return; }
-  if (!onlineOf(tv)) { Sc.error = 'TV offline'; renderScreenStatus(); again(); return; }
+  if (!onlineOf(tv) && !isNet()) { Sc.error = 'TV offline'; renderScreenStatus(); again(); return; }
   Sc.busy = true; renderScreenStatus();
   try {
     const res = await fetch(`/api/tv/${tv}/screen?w=960`, { headers: { 'X-Token': window.TOKEN } });
@@ -994,7 +1130,10 @@ async function screenTick(once = false) {
     if (img) img.src = Sc.url;
     if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
     Sc.error = null;
-    Sc.info = `captured ${res.headers.get('X-Captured')} · ${res.headers.get('X-Capture-Ms')} ms on the TV · ${Math.round(blob.size / 1024)} KB`;
+    const age = +res.headers.get('X-Age');
+    Sc.info = res.headers.get('X-Capture-Ms') === 'phone'
+      ? `phone camera · taken ${res.headers.get('X-Captured')}${age > 10 ? ` (${age < 120 ? age + ' s' : Math.round(age / 60) + ' min'} ago)` : ''}`
+      : `captured ${res.headers.get('X-Captured')} · ${res.headers.get('X-Capture-Ms')} ms on the TV · ${Math.round(blob.size / 1024)} KB`;
   } catch (e) {
     Sc.error = e.message;
   } finally {
@@ -1346,7 +1485,9 @@ function runPicker() {
     home: `${sel('pick-launcher', [['', '— leave the home screen alone —'], ['stock', "The TV's own home screen"], ...M.launchers.map((l) => [l.id, l.name])], home.launcher)}
       <div class="hint" id="home-hint"></div>`,
     screensaver: sel('pick-screensaver', [['', '— leave as it is —'], ...M.screensavers.map((x) => [x.id, x.name])], home.screensaver),
-    tweaks: sel('pick-anim', [['', '— leave as it is —'], ['0.5', 'Snappy (0.5×)'], ['1', 'Normal (1×)'], ['0', 'Off (0×)']], home.animation_scale ?? ''),
+    tweaks: `${sel('pick-anim', [['', 'Animations: leave as they are'], ['0.5', 'Animations: snappy (0.5×)'], ['1', 'Animations: normal (1×)'], ['0', 'Animations: off (0×)']], home.animation_scale ?? '')}
+      ${sel('pick-dns', [['', 'DNS: leave as it is'], ...(M.dns_filters || []).map((f) => [f.id, `DNS ad filter: ${f.name}`]), ['off', 'DNS: no filter (automatic)']], home.dns)}
+      <div class="hint" id="dns-hint"></div>`,
     buttons: keys ? `${keys} button(s) mapped. Installs Remote Remap if needed and pushes the map.` : 'No buttons mapped yet: map them in [05] remote buttons first.',
   };
   modal(`<h2>▶ Run workflow on ${esc(S.selected)}</h2>
@@ -1362,6 +1503,14 @@ function runPicker() {
       <button class="btn" data-action="picker-go" data-mode="plan">PREVIEW</button>
       <button class="btn btn-primary" data-action="picker-go" data-mode="apply">▶ RUN</button></div>`);
   updateHomeHint();
+  updateDnsHint();
+}
+
+function updateDnsHint() {
+  const v = $('#pick-dns')?.value, el = $('#dns-hint'), f = (S.meta.dns_filters || []).find((x) => x.id === v);
+  if (!el) return;
+  el.textContent = f ? `${f.about} Free, no account. Encrypted (Private DNS, Android 9+). After setting it the run checks the TV still has internet, and puts the old DNS back if not. Doesn't block YouTube ads (same servers as the video).`
+    : v === 'off' ? "Back to Android's automatic DNS (the router's)." : '';
 }
 
 function updateHomeHint() {
@@ -1376,10 +1525,11 @@ async function pickerGo(mode) {
   const steps = [...document.querySelectorAll('[data-step]')].filter((c) => c.checked).map((c) => c.dataset.step);
   if (!steps.length) { toast('tick at least one step', true); return; }
   const home = S.detail.profile.home || {}, changes = {};
-  const l = $('#pick-launcher').value, sc = $('#pick-screensaver').value, an = $('#pick-anim').value;
+  const l = $('#pick-launcher').value, sc = $('#pick-screensaver').value, an = $('#pick-anim').value, dn = $('#pick-dns').value;
   if (l !== String(home.launcher ?? '')) changes.launcher = l || null;
   if (sc !== String(home.screensaver ?? '')) changes.screensaver = sc || null;
   if (an !== String(home.animation_scale ?? '')) changes.animation_scale = an === '' ? null : +an;
+  if (dn !== String(home.dns ?? '')) changes.dns = dn || null;
   if (Object.keys(changes).length) await post(`/api/tv/${S.selected}/home`, changes);
   S.opts.reboot = $('#pick-reboot').checked;
   const recipe = Object.entries(S.meta.recipes).find(([, r]) => r.length === steps.length && r.every((x) => steps.includes(x)));
@@ -1435,6 +1585,27 @@ document.addEventListener('click', async (e) => {
     else if (a === 'dial-reload') { S.dial = null; renderDial(); loadDial(); }
     else if (a === 'dial-go') { await post(`/api/tv/${S.selected}/dial/${encodeURIComponent(t.dataset.app)}/${t.dataset.op}`); toast(t.dataset.op === 'launch' ? 'opening on the TV…' : 'stopped'); setTimeout(loadDial, 2500); }
     else if (a === 'key') await post(`/api/tv/${S.selected}/key`, { key: t.dataset.key });
+    else if (a === 'tz-reload') { S.tz = null; renderTizen(); loadTizen(); }
+    else if (a === 'tz-setup') await post(`/api/tv/${S.selected}/tizen/setup`, {});
+    else if (a === 'tz-accept') {
+      const country = $('#tz-country')?.value.trim();
+      closeModal();
+      await post(`/api/tv/${S.selected}/tizen/setup`, { accept_license: true, country: country || null });
+    } else if (a === 'tz-install') await post(`/api/tv/${S.selected}/tizen/install`, { app: t.dataset.app });
+    else if (a === 'tz-uninstall') { if (confirm('Remove this app from the TV?')) await post(`/api/tv/${S.selected}/tizen/uninstall`, { app: t.dataset.app }); }
+    else if (a === 'tz-dock-save') {
+      const order = [...document.querySelectorAll('[data-dock]')].filter((c) => c.checked).map((c) => c.dataset.dock);
+      await post(`/api/tv/${S.selected}/tizen/dock`, { dock: order }); toast('dock saved: reinstall Override Home to apply'); loadTizen();
+    } else if (a === 'pair-remote') {
+      S.pairing = true; renderDial();
+      try { await post(`/api/tv/${S.selected}/pair-remote`); toast('paired: keys and apps work now'); } finally { S.pairing = false; await loadDial(); }
+    } else if (a === 'type-send') {
+      const text = $('#type-text')?.value || '';
+      if (text) { await post(`/api/tv/${S.selected}/type`, { text }); $('#type-text').value = ''; toast('typed on the TV'); }
+    } else if (a === 'cam') {
+      S.cam = await post('/api/phonecam', { tv: S.selected, on: t.dataset.on === '1' });
+      renderScreen();
+    }
     else if (a === 'prep-toggle') { const g = S.prep.data?.guide; const p = prepProgress(g); S.prep.show = !(S.prep.show ?? !(g && p.reqLeft === 0 && p.done === p.total)); renderPrep(); }
     else if (a === 'prep-open') {
       S.prep.open = S.prep.open === t.dataset.step ? '' : t.dataset.step; renderPrep();
@@ -1568,6 +1739,7 @@ document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.matches('[data-opt]')) { S.opts[t.dataset.opt] = t.checked; return; }
   if (t.id === 'pick-launcher') { updateHomeHint(); return; }
+  if (t.id === 'pick-dns') { updateDnsHint(); return; }
   if (t.id === 'screen-interval') { S.screen.interval = +t.value; if (S.screen.live) screenTick(); return; }
   if (t.matches('[data-step]')) { document.querySelectorAll('[data-action="recipe"]').forEach((b) => b.setAttribute('aria-selected', false)); return; }
   if (t.matches('select.decision')) {
@@ -1593,6 +1765,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeModal();
   if (e.key === 'Enter' && e.target.matches('tr[data-action]')) e.target.click();
+  if (e.key === 'Enter' && e.target.id === 'type-text') $('[data-action="type-send"]')?.click();
 });
 
 /* tooltips for chart marks */

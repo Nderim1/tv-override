@@ -1,0 +1,24 @@
+# baba-tv – created by `tvctl init` on 2026-10-21. Samsung Tizen: no ADB, so only these work here:
+# list, open and close installed apps over the network; guided preparation walkthrough
+
+[tv]
+name = "baba-tv"
+host = "192.168.0.109"
+port = 8001
+platform = "tizen"
+udn = "uuid:c79a7030-5674-44f9-9751-8be92c5a71d5"
+model = "Samsung GU65TU6979UXZG"
+presets = ["samsung"]
+dial_url = "http://192.168.0.109:8080/ws/app/"
+duid = "ZPCMGLVRYFXJI"
+
+[home]
+# Override Home (tvctl install <tv> override-home): apps in the dock, in order (samsung-home/js/apps.js)
+dock = ["tizentube", "youtube", "netflix", "livetv", "browser"]
+# saver_minutes = 5
+
+[apps]
+install = [
+  "tizentube",
+]
+
